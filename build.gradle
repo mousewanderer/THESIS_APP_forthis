@@ -1,0 +1,5 @@
+// Android Gradle Plugin 8.7.3 needs Gradle 8.9 or newer and Java 17.
+// The GitHub workflow uses Gradle 8.10.2 (.github/workflows/build-apk.yml).
+plugins {
+    id 'com.android.application' version '8.7.3' apply false
+}

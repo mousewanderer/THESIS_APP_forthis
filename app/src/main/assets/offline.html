@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AgriDose</title>
+<style>
+  body { margin: 0; background: #fff; color: #000; font: 18px/1.45 system-ui, sans-serif; }
+  header { padding: 10px 16px; background: #14532d; color: #fff; font-size: 1.4rem; font-weight: 800; }
+  main { padding: 8px 16px 24px; }
+  h1 { font-size: 1.35rem; }
+  li { margin: 8px 0; }
+  .ceb { font-style: italic; color: #333; }
+  a.button { display: block; margin: 20px 0 8px; padding: 14px; text-align: center; font-weight: 800;
+             color: #fff; background: #14532d; border: 2px solid #000; border-radius: 8px; text-decoration: none; }
+</style>
+</head>
+<body>
+<header>AgriDose</header>
+<main>
+  <h1>Cannot reach the AgriDose machine</h1>
+  <ol>
+    <li>Turn on Wi-Fi and join <b>AgriDose</b> (scan code 1 on the machine's sticker).<br>
+      <span class="ceb">I-scan aron makakonek sa Wi-Fi.</span></li>
+    <li>If the phone says "no internet", tap <b>Stay connected</b>.<br>
+      <span class="ceb">Kon moingon ang telepono og "no internet", pindota ang "Stay connected".</span></li>
+    <li>Check that the machine is switched on.</li>
+  </ol>
+  <a class="button" href="http://192.168.4.1/">Retry</a>
+  <p id="auto">Trying again in 5 s...</p>
+</main>
+<script>
+  // Try again by itself every 5 seconds.
+  var left = 5;
+  setInterval(function () {
+    left--;
+    if (left <= 0) location.href = 'http://192.168.4.1/';
+    else document.getElementById('auto').textContent = 'Trying again in ' + left + ' s...';
+  }, 1000);
+</script>
+</body>
+</html>

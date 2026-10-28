@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Same green as the dashboard page (app.css: brand) -->
+    <color name="brand">#FF14532D</color>
+</resources>
