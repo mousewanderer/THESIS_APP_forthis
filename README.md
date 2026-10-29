@@ -10,10 +10,21 @@ What the app adds over Chrome:
   app binds itself to the Wi-Fi network, so it always reaches the machine.
 - **A help page** when the machine cannot be reached (join the Wi-Fi, tap *Stay
   connected*), which retries by itself every 5 seconds.
-- **Download CSV** saves the dose log wherever you choose on the phone.
+- **Download CSV** (dose log), **Download records (CSV)** (crop records, farmers),
+  **Save original** and **Save compressed** (crop photos) save the file wherever
+  you choose on the phone.
+- **Take photo** on a crop record opens the phone's camera app, **Choose photo**
+  the gallery. (A web view does nothing with these buttons unless the app answers
+  them.)
+
+The dashboard looks like the team's Blynk-style app: Machine, Records, Recommend,
+Crop Guide and Batch Log tabs. The phone does the heavy work inside the page:
+it compresses photos, ranks the recipes and sorts the records. The ESP32 only
+stores the files on its SD card and serves them back.
 
 It is still look-only: doses are started only from the machine's keypad. The app
-gives the page no extra powers.
+gives the page no extra powers (no JavaScript bridge, no camera permission: the
+phone's own camera app takes the photo).
 
 ## Get the APK
 
@@ -41,7 +52,8 @@ Every push to this repository builds the app on GitHub (`.github/workflows/build
 
 | File | What it does |
 |---|---|
-| `app/src/main/java/ph/agridose/dashboard/MainActivity.java` | the whole app: web view, Wi-Fi binding, help page, CSV save |
+| `app/src/main/java/ph/agridose/dashboard/MainActivity.java` | the app: web view, Wi-Fi binding, help page, downloads, photo buttons |
+| `app/src/main/java/ph/agridose/dashboard/PhotoProvider.java` | the one file the camera app may write a new photo to (app cache) |
 | `app/src/main/AndroidManifest.xml` | permissions (internet, network state), portrait screen |
 | `app/src/main/res/xml/network_security_config.xml` | plain HTTP allowed to 192.168.4.1 only |
 | `app/src/main/assets/offline.html` | the help page |
@@ -59,3 +71,13 @@ The app has not run on a phone yet. Check on the team's phones: the dashboard
 opens with mobile data on, the help page appears and recovers when the ESP32 is
 switched off and on, crop forms work with the keyboard open, and Download CSV
 saves a file that opens in a spreadsheet app.
+
+Version 1.1 (photos), also not run on a phone yet:
+- **Take photo** opens the camera, and after the shot the photo shows in the form.
+  Try two camera apps if the phone has them.
+- **Choose photo** opens the gallery; cancelling it leaves the form as it was,
+  and the buttons still work afterwards.
+- Save a record with a photo, then check the SD card on a laptop: `/crop/photos/`
+  has the original and `_compressed.jpg`.
+- **Save original** in the photo view saves the full photo on the phone.
+- Android's Back button closes an open sheet or photo before it leaves the app.

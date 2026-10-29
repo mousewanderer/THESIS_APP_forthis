@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- No title bar: the dashboard page has its own green header. -->
-    <style name="Theme.AgriDose" parent="android:Theme.Material.Light.NoActionBar">
+    <!-- No title bar: the dashboard page has its own dark header. -->
+    <style name="Theme.AgriDose" parent="android:Theme.Material.NoActionBar">
         <item name="android:colorPrimary">@color/brand</item>
         <item name="android:colorPrimaryDark">@color/brand</item>
         <item name="android:colorAccent">@color/brand</item>

@@ -27,5 +27,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Where the camera app saves a new crop photo (PhotoProvider.java).
+             No CAMERA permission: the phone's own camera app takes the photo. -->
+        <provider
+            android:name=".PhotoProvider"
+            android:authorities="ph.agridose.dashboard.photos"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
