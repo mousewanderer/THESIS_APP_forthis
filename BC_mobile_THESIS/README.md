@@ -54,7 +54,8 @@ Mega prints `ESP32 link OK`.
 **Test without the Mega:** set `FAKE_MEGA 1` in `config.h` and upload to a bare
 ESP32 on USB. A pretend Mega runs inside it: a demo dose every 40 s, every fourth
 one ends in a fault. The keypad flow works from the Serial Monitor too:
-`#A#600#` then `#`. The dashboard shows a yellow TEST MODE banner.
+`#A#600#` then `#`; `DB#` drains hopper B, `*` stops it. The dashboard shows a
+yellow TEST MODE banner.
 
 ## 2. Connect a phone
 
@@ -81,7 +82,8 @@ see `AgriDose_Android/README.md`.
 The page looks like the team's Blynk-style phone app (agridose-game, docs/05):
 dark screen, lime accent, five tabs at the bottom. The header shows "Solid
 Amendment Project", a lime dot when the Mega is online, a bell with a red dot
-when there is an alert (fault, Mega offline, SD card problem), and the farmer
+when there is an alert (fault, Mega offline, SD card problem, a hopper under
+200 g), and the farmer
 ("Rosa · ID 2", or "Log in"); tap it to log in, or (admin) to change or add a farmer. Two switches, remembered
 on each phone:
 - **Sun** button: a bright, high-contrast look (black on white, dark green
@@ -105,8 +107,10 @@ stored and how to reset a forgotten admin password.
 
 - **Machine**: the three hopper weights (gauges 0 to 10 kg, as on the team's
   Blynk screen) and their total, an arc gauge with the weight dispensed in the
-  current dose (0 to 300 g), the machine state (Idle / Dosing / Fault / Offline), and the last dose:
-  recipe, target, actual, error in g and %. Updates live over a WebSocket and
+  current dose (0 to 900 g), the machine state (Idle / Dosing / Fault / Offline), and the last dose:
+  recipe, target, actual, error in g and %. **Enough stock for** (10 Nov): for each
+  recipe, the biggest dose the hoppers can give, and which hopper to refill when it
+  is short (`stock_max_g` / `stock_short` in the status, the keypad's rule below). Updates live over a WebSocket and
   reconnects by itself after the phone sleeps or the Wi-Fi drops. The bottom line
   shows the ESP32's free memory, lowest free memory since boot, and how many
   phones are on the live feed. Use it to measure memory with 3 to 5 phones.
@@ -248,9 +252,15 @@ Protocol (`AgriLink.h`, marked `[ADDED]` / `[DEFINED HERE]`):
 2. **WT `<dg>`** = mass dispensed so far in the current dose (all hoppers added);
    it holds after the dose and resets at TARE.
 3. **I / D / F** = Idle / Dosing / Fault.
-4. A fault (hopper empty, sensor, timeout) **ends the dose**: DONE is sent with what
-   was dosed, flag F stays until STOP (`*` on the keypad). The old refill-and-resume
-   is gone. `RESUME` (added 3 Nov) is only for a dose a power cut interrupted.
+4. A fault (hopper empty, sensor, timeout) **pauses the dose** (changed 3 Nov; until
+   then it ended it). The augers stop, flag F stays, and the LCD names the fault and
+   goes round what to check (`FAULT_CHECKS` in the Mega sketch), then `HANDS CLEAR?`
+   / `#=GO ON *=END`. `#` sends RESUME: the same hopper carries on, weighed afresh, so
+   stock added or removed during the pause isn't counted. If the cause is still there,
+   the fault comes back. `*` sends STOP: the dose ends and DONE reports what came out.
+   DONE goes out only then, so a dose still has one log row however many faults it had.
+   Top-ups (TRIM) stay best effort: a hopper that stalls in a top-up is accepted as it
+   is, with no fault.
 5. The Mega refuses a new DOSE (`NAK BUSY`) until the previous DONE got its GOT.
 6. ACK timeout 500 ms, at most 6 sends (3 s). HELLO goes out again right before the
    ESP32's first command. If the Mega restarts while a command waits, that command
@@ -264,6 +274,53 @@ Protocol (`AgriLink.h`, marked `[ADDED]` / `[DEFINED HERE]`):
    up), at most every 500 ms while dosing, and every 10 s anyway. The ESP32
    pushes to the phones only when a value changed.
 9. **`RESUME,<seq>` and WT flag `R`** (added 3 Nov): see "Saved state" below.
+
+Stock check before a dose (added 10 Nov, `AgriDose_ESP32_Link/stock_check.h`; the
+protocol did not change):
+- **The rule:** a hopper is short when its weight (the last `HW`) is under its share of
+  the dose (the same `agriSplitDose` the Mega uses) plus `STOCK_SPARE_G` (config.h, 20 g
+  each, a placeholder: material the auger can't reach, and the 5 g an `HW` may be
+  behind). A hopper the recipe doesn't use is never short.
+- **Keypad:** checked after the mass is typed and again at `#` on CONFIRM. A short
+  hopper gives `LOW COMPOST` / `NEED 650 HAS 410` (NEED includes the spare) for each
+  short hopper in turn, then `REFILL HOPPER OR` / `#=GO ON *=BACK`. Refilling turns it
+  into CONFIRM by itself; `#` starts the dose anyway (a hopper that runs out only
+  pauses it); `*` goes back to the mass. No hopper weights yet (Mega offline, or no
+  `HW` since start-up): no check, as before.
+- **Dashboard:** the Machine tab's **Enough stock for** uses the same rule, worked out
+  on the ESP32 so the two never disagree. `FAKE_MEGA` now sends pretend `HW` too.
+- **Known limit:** C reads about 1.5 % of B's load light, so a full B can make ash
+  look a few grams lower than it is. That only makes the warning come a little early.
+
+Low hopper on the bell (added 10 Nov, later; `www/app.js`, `LOW_HOPPER_G`):
+- A hopper whose last `HW` weight is under **200 g** puts the red dot on the bell, and
+  the bell lists it: `Hopper B (compost) is low: 150 g left, under 200 g. Refill it
+  before the next dose.` One line per low hopper. Worked out on the phone; the ESP32
+  did not change for it. A warning only: whether a dose fits is still the stock check
+  above. No hopper weights yet, or the Mega offline: no low alert.
+
+Drain a hopper (added 10 Nov, later; both boards, and `AgriLink.h`):
+- **Keypad:** `D` on HOME (`AGRIDOSE D=DRAIN`) opens `DRAIN  A=HULL` / `B=COMP C=ASH`.
+  `A`, `B` or `C` shows what that hopper holds (`COMP HAS 4123g` / `#=DRAIN *=BACK`).
+  `#` starts it. `*` goes back, `D` goes home.
+- **Mega:** runs that one auger at its `PWM_MAX`, no pulsing (there is no target).
+  LCD `DRAINING COMP` / `OUT 1234g *=STOP`. It stops on `*` (`DRAIN STOPPED`), by
+  itself when under 1 g came out in 15 s (`NO FLOW: EMPTY?`, the same window as the
+  EMPTY fault: the hopper is empty, or stuck), on a dead load cell (`DRAIN: NO SENSOR`)
+  and after 10 minutes (`DRAIN TIME UP`, `DRAIN_MAX_MS`; `D` again to go on). Then
+  `COMP 1234g OUT` for 3 s.
+- **Protocol:** `DRAIN,<seq>,<A|B|C>` (idle only, NAK `BUSY` otherwise, `ARGS` for any
+  other letter) and WT flag `E` while it runs. Flash **both** boards and keep both
+  `AgriLink.h` copies the same: an older ESP32 reads flag `E` as a bad frame and
+  shows *Mega offline* while a drain runs.
+- **Not a dose:** no DONE, no log row, the WT mass stays the last dose's, the learned
+  stop-early grams don't change, and nothing is saved, so after a power cut the
+  auger stays off. While draining, `DOSE`, `TARE` and `RESUME` are refused (`BUSY`).
+- **Dashboard:** Machine Status says **Draining** (A hopper is being emptied); the
+  hopper gauge goes down as it drains.
+- **Decided by Claude, to confirm with the team:** the screen texts, full speed, the
+  15 s no-flow stop, the 10-minute limit, and that the material comes out where a
+  dose does (put a container under the outlet).
 
 Saved state (added 3 Nov, `AgriDose_Mega_Link/dose_state.h`):
 - **Why it saves ahead of time:** the Mega gets no warning of a power cut (no pin
@@ -289,16 +346,20 @@ Saved state (added 3 Nov, `AgriDose_Mega_Link/dose_state.h`):
 - **A power cut during a save:** the records go round 16 slots, each with a CRC. A
   half-written one fails the CRC and the one before it is used. The ring takes about
   1.6 million saves, which is over 50,000 doses.
+- **A power cut during a fault pause:** the save says so (`STATE_PHASE_FAULT`), and at
+  power-on the saved grams are used without asking the scale, because the auger was
+  off and the operator may have refilled the hopper.
 - **Known limits:** only the Mega's own power counts. With the motor supply off and
-  the Mega still on (on USB, say), the dose ends in an EMPTY fault after 5 s, as
-  before. Material added or removed while off goes unnoticed if the change is small
+  the Mega still on (on USB, say), the dose pauses with an EMPTY fault after 15 s:
+  switch the motor supply on and press `#`. Material added or removed while off goes unnoticed if the change is small
   (under 10 g added, under 150 g removed). A saved zero can't know that a hopper was
   moved or rebuilt: press `0` with the hoppers empty. A resumed dose has no
   `date_time` until a phone has set the clock again. How far the real load cells'
   zero moves across a power-off has not been measured.
 
 Other:
-- Keypad: on HOME, `0` = zero the scales. `*` during a dose = STOP.
+- Keypad: on HOME, `0` = zero the scales, `D` = drain a hopper. `*` during a dose or
+  a drain = STOP.
 - Farmers are added on the dashboard ("Add a farmer") or by editing `users.csv`;
   IDs 1 to 9999. Growth records are linked to a planting by plot number.
 - Crop fields come from `agridose-v2/docs/05-phone-app.md`.
@@ -364,7 +425,8 @@ Done on the laptop (29 Oct, photos and the new tabs):
   the CSV downloads, 12 crops in the guide, no sideways scrolling and no
   JavaScript errors.
 
-Done on the laptop (3 Nov, saved state). Not yet run on the machine:
+Done on the laptop (3 Nov, saved state). On the machine so far, only bench step 1
+below has been run: a dose has not been cut off yet.
 - `tests/test_dose_state.cpp`: the record and the ring, with a power cut at every
   byte of a save, a torn byte, and a flipped bit anywhere in a record.
 - `python tests/test_power_cut.py`: compiles the real Mega sketch against a pretend
@@ -376,9 +438,30 @@ Done on the laptop (3 Nov, saved state). Not yet run on the machine:
   GOT. It checks the firmware's logic, not the accuracy of the real machine. Eight
   deliberately broken copies of the sketch were all caught.
 
-To test on the bench (hoppers may be empty for 1 to 4):
+Done on the laptop (10 Nov, drain). Not yet run on the machine: `tests/test_power_cut.py`
+(80 checks) drains each hopper on the real Mega sketch: B runs until empty and stops
+by itself 15 s later, showing the grams within 3 g; `*` stops it at once; while
+draining, DOSE, TARE and RESUME are refused, and a DRAIN during a dose is refused
+with the dose still on target; a jammed auger and a dead load cell stop it; 10 kg of
+hull stops at the 10-minute limit; a power cut during a drain leaves every auger off
+at power-on; a dose straight after a drain lands on target. No DONE in any of them,
+and no other auger ever turns. `tests/test_agrilink.cpp` checks flag `E` and the
+hopper letter. Both sketches compile (ESP32 91 %, also with `FAKE_MEGA`; Mega 12 %
+of flash, 48 % of RAM).
+
+Done on the laptop (3 Nov, faults pause the dose). Not yet run on the machine:
+`tests/test_power_cut.py` also runs each fault on the real sketch: a hopper running
+out in each position and being refilled, motor power off and back on, a dead load
+cell, a 4-minute TIMEOUT, `#` with nothing fixed (the fault comes back), `*`, a power
+cut during the pause and after it, and one bad reading just before a fault (without
+the re-weigh it dosed 308 g of hull instead of 150 g). Nine more deliberately broken
+copies of the sketch were all caught.
+
+To test on the bench (hoppers may be empty for 1 to 4, and for 6):
 1. First power-on after flashing, hoppers empty: `ZEROING SCALES`, then `Saved state
-   found` on the next power-on, with no zeroing.
+   found` on the next power-on, with no zeroing. **Passed 3 Nov** on a reset, along
+   with a keypad zero being saved. A reset keeps the HX711s powered, so step 2 still
+   needs a real power-off.
 2. Put the 261 g wrench in a hopper, switch off and on: it still reads about 261 g.
    The difference is how far the zero moves across a power-off, which is what
    `STATE_DRIFT_G` allows for.
@@ -387,6 +470,28 @@ To test on the bench (hoppers may be empty for 1 to 4):
 4. The same again, but answer `#`: with an empty hopper it runs on to `EMPTY: HULL`.
 5. With material: cut the power in the middle of a dose, answer `#`, and weigh the
    output on a reference scale.
+6. Start a dose with hopper A empty: `EMPTY: HULL` after 15 s, and the LCD goes round
+   `REFILL HOPPER?`, `STUCK? TAP JUG`, `MOTOR POWER ON?`, `HANDS CLEAR?`. No auger
+   moves and no row is logged yet. `#` gives the same fault again after 15 s; `*`
+   logs one row.
+7. With material: start a dose with the motor supply off. At `EMPTY: HULL` switch it
+   on and press `#`: the dose finishes. Weigh the output on a reference scale.
+8. [10 Nov] Keeping the grams: in a dose with material, switch the motor supply off
+   once some grams are out, and push down on that jug with a hand as the fault
+   appears. Let go, switch the motor on, press `#`: the LCD must carry on from the
+   grams it showed before the fault, not from 0 g, and Serial Monitor prints
+   `jug touched? keeping those`. Weigh the output on a reference scale.
+9. [10 Nov] Stock check: with less compost than a dose needs (say 400 g for `A 900`),
+   type the dose: `LOW COMPOST` / `NEED 650 HAS ...` instead of the check screen. Add
+   compost: it turns into the check screen by itself. Then measure how much each jug
+   still holds when its auger feeds nothing, and set `STOCK_SPARE_G` from that.
+10. [10 Nov] Drain: with a container under the outlet and about 500 g in hopper B,
+    press `D`, `B`, `#`. Only auger B turns, the LCD counts `OUT ...g`, and the
+    dashboard says *Draining*. `*` stops it at once (`DRAIN STOPPED`). Again with
+    `#`: when B is empty it stops by itself 15 s later (`NO FLOW: EMPTY?`). Weigh
+    the container against the grams shown. No row lands in `/dose_log.csv`.
+11. [10 Nov] Low alert: take hopper C under 200 g: the bell gets its red dot and
+    lists `Hopper C (wood ash) is low`. Refill it: the dot goes.
 
 Done on the bench (30 Oct, both boards on the Link firmware; the augers are not built yet, only the outlet pipes):
 the link comes up, a dose typed as keys in the ESP32's Serial Monitor runs and
@@ -404,9 +509,13 @@ Done on the laptop (30 Oct, Edit):
 
 Done on the laptop (30 Oct, hopper weights, data rules, logins):
 - Both sketches compile (ESP32 89 % of the app space, Mega 8 %).
+- `tests/test_stock.cpp` (10 Nov): the stock check, against shares worked out by hand,
+  and 3000 random stocks. `node tests/test_dashboard.mjs` checks the Machine tab's
+  Enough stock for.
 - `tests/test_agrilink.cpp`: the HW deadband (+-5 g not sent, 5.1 g sent, a slow
   drift sent once it adds up, the longest HW frame fits).
-- `node tests/test_dashboard.mjs` (84 checks, with Delete farmer): the hopper gauges and total; each
+- `node tests/test_dashboard.mjs` (104 checks since 10 Nov, with the low-hopper bell and
+  Draining): the hopper gauges and total; each
   data rule refused with its reason; the machine open without a login and the
   records closed (401); a wrong password refused; the first admin login forced
   to a new password (and nothing else allowed meanwhile); the admin setting a
@@ -470,8 +579,8 @@ test on the bench:
    dashboard says *Mega offline* within 2 s.
 2. A dose from the keypad (`#`, `A`, `#`, `250`, `#`, `#`): it runs, the result
    shows on the LCD, one row lands in `/dose_log.csv`, the dashboard updates.
-3. `*` during a dose stops the augers at once; an empty hopper gives flag F and
-   `*` clears it. The Mega can take up to about 1 s to read `*` while it is taking
+3. `*` during a dose stops the augers at once; an empty hopper gives flag F, and
+   `#` continues the dose or `*` ends it. The Mega can take up to about 1 s to read `*` while it is taking
    the first weight of a hopper.
 4. `0`, `#` on HOME zeroes the scales (about 6 s; the dashboard shows *Mega
    offline* meanwhile, which is expected).

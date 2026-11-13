@@ -25,7 +25,7 @@ struct LiveState {
   uint32_t lastFrameMs;   // millis() of the last valid frame from the Mega
   uint32_t frameCount;    // valid frames since boot
   int32_t  weightDg;      // from WT: dispensed in the current / last dose
-  char     flag;          // from WT: 'I', 'D', 'F', 'R', or '?' before the first WT
+  char     flag;          // from WT: 'I', 'D', 'F', 'R', 'E' (draining), or '?' before the first WT
   uint32_t doneCount;     // goes up by one for every new DONE
   DoseResult lastDone;
   bool     haveHoppers;   // at least one HW frame since boot

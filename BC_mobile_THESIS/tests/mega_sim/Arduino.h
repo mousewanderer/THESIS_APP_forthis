@@ -90,7 +90,7 @@ class HX711 {
   void set_scale(float s) { scale = s; }
   void set_offset(long o) { offset = o; }
   long get_offset() { return offset; }
-  bool wait_ready_timeout(unsigned long) { return true; }
+  bool wait_ready_timeout(unsigned long ms);
   bool is_ready();
   float get_units(int times = 1);
   void tare(int times = 10);

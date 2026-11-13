@@ -34,7 +34,7 @@ static uint32_t   flightSentAt = 0;
 static LcdText  lcd = {false, "", ""};
 static uint32_t lcdSentAt = 0;
 
-static const char* const CMD_NAMES[] = {"PING", "TARE", "STOP", "DOSE", "RESUME"};  // same order as LinkCmd
+static const char* const CMD_NAMES[] = {"PING", "TARE", "STOP", "DOSE", "RESUME", "DRAIN"};  // same order as LinkCmd
 
 // The one place a frame leaves the ESP32 for the Mega.
 static void sendBody(const char* body) {
@@ -89,6 +89,7 @@ static void startNextCommand() {
   flightReq = req;
   flightSeq = takeSeq();
   if (req.cmd == LINK_DOSE) snprintf(flightBody, sizeof(flightBody), "DOSE,%u,%c,%d", flightSeq, req.recipe, req.grams);
+  else if (req.cmd == LINK_DRAIN) snprintf(flightBody, sizeof(flightBody), "DRAIN,%u,%c", flightSeq, req.recipe);
   else snprintf(flightBody, sizeof(flightBody), "%s,%u", CMD_NAMES[req.cmd], flightSeq);
   inFlight = true;
   flightTries = 1;

@@ -247,6 +247,117 @@ def main():
                     wrong.append((cut, a["out"], r["out"]))
         check(hits > 0 and not wrong, "a cut after a hopper finished: it does not run again (%d cuts landed there): %s" % (hits, wrong[:2]))
 
+        # ---- a fault pauses the dose, the LCD says what to check, # continues ----
+        def on_target(out):
+            return worst_error(out) <= TOLERANCE_G
+
+        def low_stock(hopper, grams):
+            m.fresh()
+            s = list(FILL)
+            s[hopper] = grams
+            m.set_stock(s)
+
+        # Hopper A runs out at 80 g of 150 g, the operator refills it and presses #.
+        low_stock(0, 80.0)
+        r = m.power_on("--dose", DOSE, "--answer", "resume", "--fix-at-fault", 1, "--refill", 300, "--end-idle")
+        print("      ran out, refilled, #: out %s g, DONE %s" % (r["out"], r["dones"]))
+        check("F" in r["flags"], "a hopper that runs out gives flag F")
+        check(r["donesAtFirstAnswer"] == 0, "the dose is only paused: no DONE until the operator answers")
+        check(not r["motorInFault"], "no auger is driven during the pause")
+        for text in ("EMPTY: HULL", "REFILL HOPPER?", "STUCK? TAP JUG", "MOTOR POWER ON?", "HANDS CLEAR?", "#=GO ON *=END"):
+            check(any(text in sc for sc in r["screens"]), "the LCD shows: %s" % text)
+        check(all(len(p) <= 16 for sc in r["screens"] for p in sc.split("|")), "every screen fits 16 columns: %s" % r["screens"])
+        check(on_target(r["out"]), "after the refill and # every hopper lands on target")
+        check(len(r["dones"]) == 1 and abs(r["dones"][0][3] / 10 - sum(r["out"])) <= 8,
+              "one DONE, and it says what really came out: the refill is not counted")
+
+        # The same, in the later hoppers: the finished ones don't run again.
+        low_stock(2, 12.0)
+        r = m.power_on("--dose", DOSE, "--answer", "resume", "--fix-at-fault", 1, "--refill", 100, "--end-idle")
+        check(any("EMPTY: ASH" in sc for sc in r["screens"]) and on_target(r["out"]), "ash runs out, is refilled, #: on target, hull not run again: %s" % r["out"])
+        low_stock(1, 100.0)
+        r = m.power_on("--dose", DOSE, "--answer", "resume", "--fix-at-fault", 1, "--refill", 500, "--end-idle")
+        check(any("EMPTY: COMPOST" in sc for sc in r["screens"]) and on_target(r["out"]), "compost runs out, is refilled, #: on target: %s" % r["out"])
+
+        # One bad reading just before the fault must not carry over into the rest of the dose.
+        low_stock(0, 80.0)
+        r = m.power_on("--dose", DOSE, "--spike-before-fault", "--answer", "resume", "--fix-at-fault", 1, "--refill", 300, "--end-idle")
+        check("F" in r["flags"] and on_target(r["out"]), "a bad reading just before the fault: the re-weigh keeps the grams right: %s" % r["out"])
+
+        # [10 Nov] A hand on the jug (clearing a clog) while the fault re-weighs it: the
+        # grams already dosed must be kept, not counted from zero again after #.
+        for early in (False, True):
+            low_stock(0, 80.0)
+            args = ["--dose", DOSE, "--press", 120, "--answer", "resume", "--fix-at-fault", 1, "--refill", 300, "--end-idle"]
+            if early:
+                args.append("--press-early")
+            r = m.power_on(*args)
+            check("F" in r["flags"] and on_target(r["out"]) and len(r["dones"]) == 1 and abs(r["dones"][0][3] / 10 - sum(r["out"])) <= 8,
+                  "a hand pushing on the jug %s: # carries on from the grams already out: out %s, DONE %s" %
+                  ("while it is stuck and at the fault" if early else "at the fault", r["out"], r["dones"]))
+
+        # * ends it: logged with what came out, and nothing else runs.
+        low_stock(0, 80.0)
+        r = m.power_on("--dose", DOSE, "--answer", "stop", "--end-idle")
+        check(len(r["dones"]) == 1 and r["donesAtFirstAnswer"] == 0 and abs(r["dones"][0][3] / 10 - sum(r["out"])) <= 3 and r["out"][1] == 0 and r["out"][2] == 0,
+              "* at a fault: one DONE with what came out, and the other hoppers never run: %s" % r["dones"])
+
+        # Motor power off: the auger moves nothing, EMPTY after 15 s; power back on and #.
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--feed-scale", 0, "--answer", "resume", "--fix-at-fault", 1, "--end-idle")
+        check("F" in r["flags"] and on_target(r["out"]), "motor power off, then on, then #: the dose finishes on target")
+
+        # Nothing fixed: # gives the same fault again, as often as it takes, and * still works.
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--feed-scale", 0, "--answer", "resume,resume,stop", "--end-idle")
+        check(r["flags"].count("F") == 3 and len(r["dones"]) == 1 and sum(r["out"]) == 0, "not fixed: the fault comes back on each #, and * ends it: %s" % r["flags"])
+        check(not r["motorInFault"], "and no auger is driven during any pause")
+
+        # SENSOR: the load cell stops answering, the wire is fixed, #.
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--sensor-dead", 6000, "--answer", "resume", "--fix-at-fault", 1, "--end-idle")
+        check(any("SENSOR: HULL" in sc for sc in r["screens"]) and any("CHECK LOAD WIRES" in sc for sc in r["screens"]), "a dead load cell: the LCD says to check the wires")
+        check(on_target(r["out"]) and len(r["dones"]) == 1, "wire fixed, #: on target (no reading for a moment costs little): %s" % r["out"])
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--sensor-dead", 6000, "--answer", "resume,stop", "--end-idle")
+        check(r["flags"].count("F") == 2 and len(r["dones"]) == 1 and not r["motorInFault"], "wire not fixed: # can't start the auger blind, the fault comes back: %s" % r["flags"])
+
+        # TIMEOUT: feeding far too slowly for 4 minutes.
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--feed-scale", 0.05, "--answer", "resume", "--fix-at-fault", 1, "--end-idle")
+        check(any("TIMEOUT: HULL" in sc for sc in r["screens"]) and any("FEED TOO SLOW" in sc for sc in r["screens"]), "too slow for 4 minutes: TIMEOUT, and the LCD says so")
+        check(on_target(r["out"]), "cause fixed, #: on target: %s" % r["out"])
+
+        # The power goes during the pause, and the hopper is refilled while it is off.
+        low_stock(0, 80.0)
+        a = m.power_on("--dose", DOSE, "--cut-in-fault", 6000)
+        check(a["cut"] and a["dones"] == [], "power cut during a pause: no DONE yet")
+        m.set_stock(300.0, hopper=0)
+        r = m.power_on("--answer", "resume", "--end-idle")
+        print("      the LCD asks: |%s|%s|" % tuple(r["lcdR"]))
+        check("R" in r["flags"] and r["lcdR"][0].startswith("RESUME A 600g?"), "at power-on it asks, with no false weight warning: %s" % r["lcdR"])
+        check(not r["motorBeforeAnswer"], "and no auger moves until #")
+        check(on_target(r["out"]) and len(r["dones"]) == 1, "then # finishes on target: the refill is not counted: %s" % r["out"])
+        # And when stock is taken out during the pause, which a scale could not tell from dosing.
+        low_stock(0, 80.0)
+        a = m.power_on("--dose", DOSE, "--cut-in-fault", 6000)
+        m.set_stock(300.0, hopper=0)
+        m.power_on("--run", 3000)                       # still unanswered through another power-off
+        r = m.power_on("--answer", "resume", "--end-idle")
+        check(on_target(r["out"]), "asked twice, then #: still on target: %s" % r["out"])
+
+        # A cut at many moments after a fault was answered. The fault comes at about
+        # 27 s (15 s EMPTY window since 10 Nov) and the operator answers about 11 s later, so the cuts start at 40 s.
+        wrong = []
+        for n, cut in enumerate(range(300, 45000, 2903)):
+            low_stock(0, 80.0)
+            a = m.power_on("--dose", DOSE, "--answer", "resume", "--fix-at-fault", 1, "--refill", 300, "--cut", 40000 + cut, "--seed", n + 1)
+            assert a["cut"] and "F" in a["flags"] and a["donesAtFirstAnswer"] == 0, "the cut came before the fault was answered: %s" % a
+            b = m.power_on("--answer", "resume", "--end-idle", "--seed", n + 50)
+            if not on_target(b["out"]) or b["motorBeforeAnswer"]:
+                wrong.append((cut, b["out"]))
+        check(not wrong, "a power cut after a fault was answered: still on target: %s" % wrong[:3])
+
         # ---- the ESP32 did not confirm the result before the power went ----
         m.fresh()
         a = m.power_on("--dose", DOSE, "--no-got", "--run", 90000)
@@ -257,15 +368,78 @@ def main():
         c = m.power_on("--run", 3000)
         check(c["dones"] == [], "once confirmed, it is not sent again")
 
+        # ---- [10 Nov] draining a hopper (D on the keypad, then A, B or C, then #) ----
+        def drain_screen(r, start):
+            return next((sc for sc in r["drainScreens"] if sc.startswith(start)), "")
+
+        def shown_g(screen):                            # "DRAIN STOPPED   |HULL 41g OUT    " -> 41
+            return int(screen.split("|")[1].split()[1].rstrip("g"))
+
+        m.fresh()                                       # FILL: hull 500, compost 900, ash 300 g
+        r = m.power_on("--drain", "B,7", "--end-idle")
+        print("      drain B: out %s g, screens %s" % (r["out"], r["drainScreens"]))
+        check(r["replies"][:1] == ["ACK,7"] and "E" in r["flags"] and r["flag"] == "I", "DRAIN B: accepted, flag E while it runs, then idle: %s" % r["flags"])
+        check(r["out"][1] > 899 and r["out"][0] == 0 and r["out"][2] == 0 and r["ran"] == [0, 1, 0],
+              "it empties the compost hopper and runs no other auger: %s" % r["out"])
+        check(r["dones"] == [] and r["wt"] == 0, "a drain is not a dose: no DONE (no log row), the WT mass is unchanged")
+        check(not any(r["learned"]) and all(abs(x - 3.0) < 1e-6 for x in r["stopEarly"]), "a drain doesn't change the learned stop-early grams")
+        check("|OUT " in drain_screen(r, "DRAINING COMP") and "*=STOP" in drain_screen(r, "DRAINING COMP"), "the LCD shows DRAINING COMP / OUT ...g *=STOP")
+        sc = drain_screen(r, "NO FLOW: EMPTY?")
+        check(sc and abs(shown_g(sc) - r["out"][1]) <= 3, "it stops by itself when nothing comes out, and shows the grams: |%s|" % sc)
+        check(all(len(p) <= 16 for sc in r["drainScreens"] for p in sc.split("|")), "every drain screen fits 16 columns")
+
+        m.fresh()
+        r = m.power_on("--drain", "A,7", "--send", "6000:STOP,8", "--end-idle")
+        sc = drain_screen(r, "DRAIN STOPPED")
+        check(r["replies"][:2] == ["ACK,7", "ACK,8"] and 25 < r["out"][0] < 55 and sc and abs(shown_g(sc) - r["out"][0]) <= 3,
+              "* stops a drain at once and shows what came out: %.1f g, |%s|" % (r["out"][0], sc))
+
+        m.fresh()
+        r = m.power_on("--drain", "C,7", "--send", "3000:DOSE,8,A,600", "--send", "3500:TARE,9", "--send", "4000:RESUME,10",
+                       "--send", "5000:STOP,11", "--end-idle")
+        check(r["replies"][1:4] == ["NAK,8,BUSY", "NAK,9,BUSY", "NAK,10,BUSY"] and r["dones"] == [] and r["ran"] == [0, 0, 1],
+              "while draining, DOSE, TARE and RESUME are refused (BUSY): %s" % r["replies"])
+
+        m.fresh()
+        r = m.power_on("--dose", DOSE, "--send", "5000:DRAIN,8,B", "--end-idle")
+        check("NAK,8,BUSY" in r["replies"] and on_target(r["out"]) and len(r["dones"]) == 1, "DRAIN during a dose is refused, and the dose lands on target")
+        r = m.power_on("--drain", "X,9", "--run", 3000)
+        check(r["replies"] == ["NAK,9,ARGS"] and r["ran"] == [0, 0, 0], "DRAIN of a hopper that isn't A, B or C is refused (ARGS)")
+
+        m.fresh()
+        r = m.power_on("--drain", "A,7", "--feed-scale", 0, "--end-idle")
+        check(drain_screen(r, "NO FLOW: EMPTY?") != "" and r["out"][0] == 0, "a jammed auger: the drain stops after 15 s of no flow")
+        m.fresh()
+        r = m.power_on("--drain", "A,7", "--sensor-dead", 5000, "--end-idle")
+        check(drain_screen(r, "DRAIN: NO SENSOR") != "" and r["out"][0] < 45, "a dead load cell stops the drain at once: %.1f g out" % r["out"][0])
+        m.fresh()
+        m.set_stock(10000.0 - FILL[0], hopper=0)        # 10 kg of hull: 8 g/s would take 21 min
+        r = m.power_on("--drain", "A,7", "--end-idle")
+        check(drain_screen(r, "DRAIN TIME UP") != "" and 4500 < r["out"][0] < 5000, "after 10 minutes it stops: DRAIN TIME UP, %.0f g out" % r["out"][0])
+
+        m.fresh()
+        a = m.power_on("--drain", "B,7", "--cut", 8000)
+        b = m.power_on("--run", 5000)
+        check(a["cut"] and 50 < a["out"][1] < 120 and b["flag"] == "I" and not b["motorBeforeAnswer"] and b["dones"] == [] and "R" not in b["flags"],
+              "power cut while draining: at power-on it is idle, no auger moves, nothing to resume")
+
+        m.fresh()
+        r = m.power_on("--drain", "C,7", "--send", "3000:STOP,8", "--send", "6000:DOSE,9,A,600", "--end-idle")
+        drained = r["drainScreens"] and shown_g(drain_screen(r, "DRAIN STOPPED"))
+        dose_out = [r["out"][0], r["out"][1], r["out"][2] - drained]
+        check(r["replies"][:3] == ["ACK,7", "ACK,8", "ACK,9"] and len(r["dones"]) == 1 and r["dones"][0][0] == 9 and worst_error(dose_out) <= TOLERANCE_G + 3,
+              "a dose straight after a drain still lands on target: %s" % [round(x, 1) for x in dose_out])
+
         # ---- zeroing is remembered ----
         m.fresh()
         m.set_stock([0.0, 0.0, 0.0])
         d = m.power_on("--run", 2000)
         check(all(abs(h) <= 10 for h in d["hw"]), "empty hoppers read 0 g with the saved zero: %s" % d["hw"])
+        # Only printed when every step above has run: a crash must never read as a pass.
+        print("\n%s: %d failure(s)" % ("FAILED" if failures else "ALL PASSED", failures))
         return 0 if failures == 0 else 1
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-        print("\n%s: %d failure(s)" % ("FAILED" if failures else "ALL PASSED", failures))
 
 
 if __name__ == "__main__":

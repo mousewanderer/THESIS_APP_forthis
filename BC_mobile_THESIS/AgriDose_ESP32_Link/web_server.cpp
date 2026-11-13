@@ -9,6 +9,7 @@
 #include "wall_clock.h"
 #include "json_util.h"
 #include "web_assets.h"
+#include "stock_check.h"      // [10 Nov] the biggest dose each recipe's stock covers
 #include <new>
 #include <WiFi.h>
 #include <DNSServer.h>
@@ -17,7 +18,7 @@
 
 static_assert(sizeof(AP_PASSWORD) - 1 >= 8, "AP_PASSWORD in config.h needs at least 8 characters");
 
-#define STATUS_JSON_MAX 512
+#define STATUS_JSON_MAX 640   // [10 Nov] 512 -> 640 for stock_max_g / stock_short
 #define DOSES_LIMIT_MAX 200
 #define SD_PIECE_MAX    4096    // bytes per SD read when sending a file (one mutex turn each)
 
@@ -47,6 +48,15 @@ static size_t buildStatusJson(const LiveState& s, char* out, size_t size) {
   if (s.haveHoppers) {
     n += snprintf(out + n, size - n, ",\"hoppers_dg\":[%ld,%ld,%ld]",
                   (long)s.hopperDg[0], (long)s.hopperDg[1], (long)s.hopperDg[2]);
+    // [10 Nov] For each recipe A, B, C: the biggest dose the stock covers (0 = not
+    // even the smallest), and which hoppers stop it going higher (bit 0 = A).
+    // The same rule as the keypad's LOW <hopper> screen (stock_check.h).
+    static const int32_t SPARE_G[3] = STOCK_SPARE_G;
+    int32_t maxG[3];
+    uint8_t shortMask[3];
+    for (uint8_t i = 0; i < 3; i++) maxG[i] = stockMaxDoseG(AGRI_RECIPES[i], s.hopperDg, SPARE_G, shortMask[i]);
+    n += snprintf(out + n, size - n, ",\"stock_max_g\":[%ld,%ld,%ld],\"stock_short\":[%u,%u,%u]",
+                  (long)maxG[0], (long)maxG[1], (long)maxG[2], shortMask[0], shortMask[1], shortMask[2]);
   }
   // The ESP32's time (wall_clock.h): epoch = UTC seconds, 0 while not set.
   // The page sends the phone's time when clock_set is false.

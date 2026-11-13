@@ -5,10 +5,12 @@
 #include "AgriLink.h"
 
 #define FAKE_FLOW_DG_PER_100MS 10    // about 10 g per second
-#define FAKE_FAULT_CLEAR_MS    20000UL  // a demo fault clears itself after this (as if * was pressed)
+#define FAKE_FAULT_CLEAR_MS    20000UL  // a demo fault ends the dose after this (as if * was pressed)
+#define FAKE_HW_MS             1000UL   // [10 Nov] pretend hopper weights (HW) this often
 
-enum FakeState { F_IDLE, F_DOSING, F_FAULT };
+enum FakeState { F_IDLE, F_DOSING, F_FAULT, F_DRAIN };   // F_DRAIN [10 Nov]: emptying one hopper
 static FakeState st = F_IDLE;
+static int8_t drainHop = -1;         // [10 Nov] the hopper being drained
 
 // Bytes waiting to be read by the link task.
 static char   outBuf[512];
@@ -23,6 +25,11 @@ static bool    doneUnacked = false;
 static int32_t doneActualDg = 0;
 static uint32_t lastWtAt = 0, lastDoneAt = 0, lastFlowAt = 0, idleSince = 0, faultSince = 0;
 static uint8_t demoCount = 0;
+// [10 Nov] Pretend hopper stock, dg (4.2 / 3.6 / 0.9 kg), so the stock check
+// (stock_check.h) and the dashboard's hopper gauges work in test mode too. A dose
+// takes its share out of each; it is never refilled (restart the ESP32 for that).
+static int32_t stockDg[3] = {42000, 36000, 9000};
+static uint32_t lastHwAt = 0;
 
 static void emit(const char* body) {
   char frame[AGRILINK_MAX_FRAME + 1];
@@ -48,10 +55,17 @@ static void nak(uint8_t seq, const char* why) {
 
 static void sendWt() {
   char b[24];
-  char flag = st == F_DOSING ? 'D' : st == F_FAULT ? 'F' : 'I';
+  char flag = st == F_DOSING ? 'D' : st == F_FAULT ? 'F' : st == F_DRAIN ? AGRILINK_FLAG_DRAIN : 'I';
   snprintf(b, sizeof(b), "WT,%ld,%c", (long)dispensedDg, flag);
   emit(b);
   lastWtAt = millis();
+}
+
+static void sendHw() {
+  char b[40];
+  snprintf(b, sizeof(b), "HW,%ld,%ld,%ld", (long)stockDg[0], (long)stockDg[1], (long)stockDg[2]);
+  emit(b);
+  lastHwAt = millis();
 }
 
 static void sendDone() {
@@ -111,8 +125,15 @@ void fakeMegaReceive(const char* text) {
     dispensedDg = 0;
   } else if (strcmp(verb, "STOP") == 0) {
     ack(seq);
-    if (st == F_DOSING) { endDose(); st = F_IDLE; idleSince = millis(); }
-    else if (st == F_FAULT) { st = F_IDLE; idleSince = millis(); }
+    if (st == F_DOSING || st == F_FAULT) { endDose(); st = F_IDLE; idleSince = millis(); }
+    if (st == F_DRAIN) { st = F_IDLE; idleSince = millis(); Serial.println("[FAKE MEGA] drain stopped"); }   // no DONE
+    sendWt();
+  } else if (strcmp(verb, "RESUME") == 0) {
+    if (st != F_FAULT) { nak(seq, AGRILINK_NAK_BUSY); return; }
+    ack(seq);
+    faultAtDg = -1;                                      // the pretend problem is fixed
+    st = F_DOSING;
+    lastFlowAt = millis();
     sendWt();
   } else if (strcmp(verb, "DOSE") == 0) {
     int32_t grams;
@@ -123,6 +144,16 @@ void fakeMegaReceive(const char* text) {
     if (!idle || doneUnacked) { nak(seq, AGRILINK_NAK_BUSY); return; }
     ack(seq);
     startDose(seq, f[2][0], (int)grams, false);
+  } else if (strcmp(verb, "DRAIN") == 0) {                 // [10 Nov] as the real Mega: idle only, no DONE
+    int8_t i = (n == 3) ? agriHopperIndex(f[2]) : -1;
+    if (i < 0) { nak(seq, AGRILINK_NAK_ARGS); return; }
+    if (!idle) { nak(seq, AGRILINK_NAK_BUSY); return; }
+    ack(seq);
+    drainHop = i;
+    st = F_DRAIN;
+    lastFlowAt = millis();
+    sendWt();
+    Serial.printf("[FAKE MEGA] draining hopper %c\n", 'A' + i);
   } else {
     nak(seq, AGRILINK_NAK_UNKNOWN);
   }
@@ -133,11 +164,14 @@ void fakeMegaTick() {
 
   if (st == F_DOSING && now - lastFlowAt >= 100) {
     lastFlowAt = now;
-    dispensedDg += FAKE_FLOW_DG_PER_100MS + (int32_t)random(-3, 4);
+    int32_t stepDg = FAKE_FLOW_DG_PER_100MS + (int32_t)random(-3, 4);
+    dispensedDg += stepDg;
+    int32_t outDg[3];
+    agriSplitDose(*agriRecipe(recipe), stepDg, outDg[0], outDg[1], outDg[2]);   // each hopper gives its share
+    for (uint8_t i = 0; i < 3; i++) stockDg[i] = stockDg[i] > outDg[i] ? stockDg[i] - outDg[i] : 0;
     if (faultAtDg >= 0 && dispensedDg >= faultAtDg) {
-      st = F_FAULT;                                      // pretend a hopper ran empty
+      st = F_FAULT;                                      // pretend a hopper ran empty: the dose pauses
       faultSince = now;
-      endDose();
       sendWt();
       Serial.println("[FAKE MEGA] fault: pretend hopper empty");
     } else if (dispensedDg >= targetDg - 20) {
@@ -149,8 +183,22 @@ void fakeMegaTick() {
     }
   }
 
+  // [10 Nov] Draining: about 10 g a second out of that hopper; empty ends it, as no flow does on the Mega.
+  if (st == F_DRAIN && now - lastFlowAt >= 100) {
+    lastFlowAt = now;
+    int32_t& left = stockDg[drainHop];
+    left = left > FAKE_FLOW_DG_PER_100MS ? left - FAKE_FLOW_DG_PER_100MS : 0;
+    if (left == 0) {
+      st = F_IDLE;
+      idleSince = now;
+      sendWt();
+      Serial.println("[FAKE MEGA] drain: hopper empty");
+    }
+  }
+
   if (st == F_FAULT && now - faultSince >= FAKE_FAULT_CLEAR_MS) {
-    st = F_IDLE;                                         // as if the operator pressed *
+    endDose();                                           // as if the operator pressed *
+    st = F_IDLE;
     idleSince = now;
     sendWt();
   }
@@ -163,6 +211,7 @@ void fakeMegaTick() {
   }
 
   if (now - lastWtAt >= AGRILINK_WT_PERIOD_MS) sendWt();
+  if (now - lastHwAt >= FAKE_HW_MS) sendHw();
   if (doneUnacked && now - lastDoneAt >= AGRILINK_DONE_REPEAT_MS) sendDone();
 }
 

@@ -174,6 +174,20 @@ int main() {
     check(agriBuildFrame("RESUME,255", f, sizeof(f)) > 0, "RESUME: the longest RESUME frame builds");
   }
 
+  // ---- draining a hopper [10 Nov 2026] ----
+  check(agriIsFlag('E') && AGRILINK_FLAG_DRAIN == 'E', "flag E (draining) is accepted in WT");
+  check(agriHopperIndex("A") == 0 && agriHopperIndex("B") == 1 && agriHopperIndex("C") == 2, "DRAIN: A, B, C are hoppers 0, 1, 2");
+  check(agriHopperIndex("D") < 0 && agriHopperIndex("a") < 0 && agriHopperIndex("AB") < 0 && agriHopperIndex("") < 0 &&
+        agriHopperIndex(nullptr) < 0, "DRAIN: any other hopper letter is refused");
+  {
+    char f[AGRILINK_MAX_FRAME + 1], body[AGRILINK_MAX_BODY + 1];
+    check(agriBuildFrame("DRAIN,255,C", f, sizeof(f)) > 0, "DRAIN: the longest DRAIN frame builds");
+    strcpy(body, "DRAIN,7,B");
+    char* fl[6];
+    uint8_t n = agriSplit(body, fl, 6);
+    check(n == 3 && strcmp(fl[0], "DRAIN") == 0 && agriHopperIndex(fl[2]) == 1, "DRAIN,7,B splits into the verb, the seq and hopper B");
+  }
+
   printf("\n%s: %d failure(s)\n", failures ? "FAILED" : "ALL PASSED", failures);
   return failures ? 1 : 0;
 }

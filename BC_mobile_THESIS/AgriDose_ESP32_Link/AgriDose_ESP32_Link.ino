@@ -33,17 +33,41 @@
 //  answer: # sends RESUME, * sends STOP as usual. The dose keeps its old seq,
 //  and it gets its one row in the log when it ends.
 //
+//  ADDED 3 Nov 2026: A FAULT PAUSES THE DOSE. It used to end it. The Mega's LCD
+//  says what to check (flag F), and the keypad answers the same way: # continues
+//  the dose, * ends it and logs what came out.
+//
+//  ADDED 10 Nov 2026: STOCK CHECK BEFORE A DOSE (stock_check.h). After the mass
+//  is typed, and again at # on CONFIRM, each hopper's weight (the Mega's HW) is
+//  checked against its share of the dose plus STOCK_SPARE_G (config.h). A short
+//  hopper gives STOCK_LOW instead of CONFIRM: "LOW COMPOST" / "NEED 650 HAS 410"
+//  for each short hopper in turn, then "REFILL HOPPER OR" / "#=GO ON *=BACK".
+//  Refilling turns it into CONFIRM by itself; # starts the dose anyway (running
+//  out only pauses it); * goes back to the mass. No hopper weights yet (Mega
+//  offline, or no HW since start-up): no check, as before.
+//
+//  ADDED 10 Nov 2026 (later): DRAIN A HOPPER. D on HOME opens "DRAIN  A=HULL" /
+//  "B=COMP C=ASH". A, B or C shows what that hopper holds ("COMP HAS 4123g" /
+//  "#=DRAIN *=BACK"), and # sends DRAIN,<seq>,<hopper>: the Mega runs that one
+//  auger to empty it (flag E) and draws its own screens. * stops it. The Mega
+//  also stops by itself after 15 s with no flow (empty), on a dead load cell,
+//  and after 10 min. A drain is not a dose: no DONE, no log row.
+//
 //  OFFLINE MODE (this file): the keypad and the Mega's LCD. The ONLY place
-//  a dose can be started. ONLINE MODE (web_server.cpp): look-only.
+//  a dose can be started, or a hopper drained. ONLINE MODE (web_server.cpp): look-only.
 //
 //  KEYS    # = OK / start     * = back / cancel     D = home     0-9 = mass
-//          HOME: # = new dose, 0 = zero the scales
-//          While dosing: * = STOP.   After a fault: * = clear it.
-//          After a power cut, when the LCD asks: # = continue the dose, * = end it.
+//          HOME: # = new dose, 0 = zero the scales, D = drain a hopper
+//          While draining: * = STOP.
+//          While dosing: * = STOP.
+//          After a fault or a power cut: # = continue the dose, * = end it.
+//          LOW <hopper>: # = start anyway, * = back to the mass, refill = CONFIRM.
 //
 //  SCREENS (sent to the Mega's LCD while it is idle)
 //    HOME > SELECT RECIPE > RECIPE x > DOSE MASS > CONFIRM > STARTING
+//                                     DOSE MASS > STOCK LOW (a hopper is short) > CONFIRM or STARTING
 //    HOME > ZERO SCALES? > (the Mega zeroes, about 6 s)
+//    HOME > D > DRAIN A/B/C > <HOPPER> HAS 4123g > STARTING DRAIN > (the Mega drains; * stops)
 //    During a dose the Mega draws its own screens. When it is done the
 //    result shows here, e.g. "DONE 598.6/600g" / "-1.4g -0.2%". Any key clears it.
 //
@@ -88,11 +112,13 @@
 #include "crop_photos.h"
 #include "accounts.h"
 #include "web_server.h"
+#include "stock_check.h"   // [10 Nov] enough in the hoppers for this dose?
 
 #define RANGE_ERR_MS   2000UL      // "OUT OF RANGE" shows this long
 #define MSG_SHOW_MS    3000UL      // "NO REPLY" etc. show this long
 #define RUN_GRACE_MS   1500UL      // after the DOSE is accepted, wait this long for flag D
 #define TARE_WAIT_MS   15000UL     // give up waiting for the Mega to finish zeroing after this
+#define STOCK_PAGE_MS  2500UL      // STOCK_LOW shows each screen this long, as the Mega's fault screens
 
 // ------------------------------------------------------------ keypad ---
 const byte ROWS = 4, COLS = 4;
@@ -119,21 +145,30 @@ const char* const RECIPE_TITLES[3] = {"RECIPE A GENERAL", "RECIPE B", "RECIPE C 
 //   DOSE_MASS   type the grams
 //   RANGE_ERR   the grams were outside the limits; shows for RANGE_ERR_MS
 //   CONFIRM     the last check; # sends the DOSE
+//   STOCK_LOW   [10 Nov] a hopper has too little for this dose; # sends it anyway
 //   STARTING    the DOSE was sent; waiting for the Mega's answer
 //   RUNNING     the Mega is dosing, showing a fault, or asking about an unfinished dose
 //   RESULT      the last dose's result; any key clears it
 //   TARE_ASK    "ZERO SCALES?"
 //   TARE_WAIT   TARE was sent; waiting for the Mega to finish zeroing
 //   MSG         a short message (showMsg) for MSG_SHOW_MS
+//   DRAIN_SEL   [10 Nov] which hopper to drain: A, B or C
+//   DRAIN_OK    that hopper's weight; # sends the DRAIN
+//   DRAIN_START the DRAIN was sent; waiting for the Mega's answer
 enum State {
-  HOME, SEL_RECIPE, RECIPE_OK, DOSE_MASS, RANGE_ERR, CONFIRM, STARTING,
-  RUNNING,       // the Mega is dosing, faulted or asking to resume: it owns the LCD
+  HOME, SEL_RECIPE, RECIPE_OK, DOSE_MASS, RANGE_ERR, CONFIRM, STOCK_LOW, STARTING,
+  RUNNING,       // the Mega is dosing, draining, faulted or asking to resume: it owns the LCD
   RESULT,        // the last dose's result
-  TARE_ASK, TARE_WAIT, MSG
+  TARE_ASK, TARE_WAIT, MSG,
+  DRAIN_SEL, DRAIN_OK, DRAIN_START
 };
 State state = HOME;
 
+// [10 Nov] Short hopper names on the drain screens, by hopper index (0 = A).
+const char* const DRAIN_NAMES[3] = {"HULL", "COMP", "ASH"};
+
 uint8_t  selRecipe = 0;            // 0 = A, 1 = B, 2 = C
+uint8_t  drainSel = 0;             // [10 Nov] the hopper to drain: 0 = A, 1 = B, 2 = C
 char     entry[5];                 // up to 4 typed digits
 uint8_t  entryN = 0;               // how many digits are in entry
 int      doseG = 0;                // the mass accepted at DOSE_MASS, grams
@@ -159,6 +194,52 @@ void showMsg(const char* l0, const char* l1) {
 // Clears the typed digits.
 void resetEntry() { entryN = 0; entry[0] = 0; }
 
+// ------------------------------------------------------- stock check ---
+// [10 Nov] What the STOCK_LOW screen shows: the short hoppers, and for every
+// hopper its share plus spare (NEED) and its weight (HAS), in dg.
+uint8_t  lowMask = 0;
+int32_t  lowNeedDg[3] = {0, 0, 0}, lowHaveDg[3] = {0, 0, 0};
+uint32_t lowShownAt = 0;           // when STOCK_LOW began; its screens take turns from here
+
+// Checks the hoppers for doseG of the chosen recipe and fills lowMask and the
+// numbers. False when the hopper weights aren't known (Mega offline, or no HW
+// since start-up): then nothing changes, so a LOW screen keeps its last numbers.
+bool checkStock() {
+  static const int32_t SPARE_G[3] = STOCK_SPARE_G;
+  LiveState s = liveGet();
+  if (!liveMegaOnline(s) || !s.haveHoppers) return false;
+  memcpy(lowHaveDg, s.hopperDg, sizeof(lowHaveDg));
+  lowMask = stockShortMask(AGRI_RECIPES[selRecipe], doseG, lowHaveDg, SPARE_G, lowNeedDg);
+  return true;
+}
+
+// The only place in the firmware that starts a dose.
+void sendDose() {
+  if (linkRequest(LINK_DOSE, AGRI_RECIPES[selRecipe].letter, doseG)) setState(STARTING);
+  else showMsg("LINK BUSY", "TRY AGAIN");
+}
+
+// After the mass, and at # on CONFIRM: CONFIRM (or the start) if every hopper has
+// enough, else STOCK_LOW. startIfOk = true at CONFIRM's #.
+void stockGate(bool startIfOk) {
+  if (!checkStock()) {
+    Serial.println("[STOCK] hopper weights not known yet -- not checked");
+    lowMask = 0;
+  }
+  if (lowMask == 0) {
+    if (startIfOk) sendDose();
+    else setState(CONFIRM);
+    return;
+  }
+  for (uint8_t i = 0; i < 3; i++) {
+    if (!(lowMask & (1 << i))) continue;
+    Serial.printf("[STOCK] %c %d g: %s needs %ld g with its spare, has %ld g\n", AGRI_RECIPES[selRecipe].letter, doseG,
+                  STOCK_NAMES[i], (long)((lowNeedDg[i] + 9) / 10), (long)floorf(lowHaveDg[i] / 10.0f));
+  }
+  lowShownAt = millis();
+  setState(STOCK_LOW);
+}
+
 // ------------------------------------------------- Serial Monitor LCD ---
 // Prints a screen to the Serial Monitor, only when it changes.
 void mirrorScreen(const char* l0, const char* l1) {
@@ -180,8 +261,27 @@ void draw() {
   char l0[40] = "", l1[40] = "", a[12], b[12];   // roomy; cut to 16 columns below
   switch (state) {
     case HOME:
-      snprintf(l0, sizeof(l0), "AGRIDOSE READY");
+      snprintf(l0, sizeof(l0), "AGRIDOSE D=DRAIN");
       snprintf(l1, sizeof(l1), "#=DOSE  0=ZERO");
+      break;
+    case DRAIN_SEL:                    // [10 Nov] which hopper
+      snprintf(l0, sizeof(l0), "DRAIN  A=HULL");
+      snprintf(l1, sizeof(l1), "B=COMP C=ASH");
+      break;
+    case DRAIN_OK: {                   // e.g. "COMP HAS 4123g" / "#=DRAIN *=BACK"
+      LiveState s = liveGet();
+      if (liveMegaOnline(s) && s.haveHoppers) {
+        int32_t dg = s.hopperDg[drainSel];
+        snprintf(l0, sizeof(l0), "%s HAS %ldg", DRAIN_NAMES[drainSel], (long)(dg > 0 ? dg / 10 : 0));
+      } else {
+        snprintf(l0, sizeof(l0), "DRAIN %s?", DRAIN_NAMES[drainSel]);
+      }
+      snprintf(l1, sizeof(l1), "#=DRAIN *=BACK");
+      break;
+    }
+    case DRAIN_START:
+      snprintf(l0, sizeof(l0), "STARTING DRAIN");
+      snprintf(l1, sizeof(l1), "PLEASE WAIT...");
       break;
     case SEL_RECIPE:
       snprintf(l0, sizeof(l0), "SELECT RECIPE");
@@ -203,6 +303,21 @@ void draw() {
       const AgriRecipe& r = AGRI_RECIPES[selRecipe];
       snprintf(l0, sizeof(l0), "%c %dg %u/%u/%u%%", r.letter, doseG, r.hullPct, r.compostPct, r.ashPct);
       snprintf(l1, sizeof(l1), "#=START *=CANCEL");
+      break;
+    }
+    case STOCK_LOW: {                  // e.g. "LOW COMPOST" / "NEED 650 HAS 410", then what to press
+      uint8_t list[3], n = 0;
+      for (uint8_t i = 0; i < 3; i++) if (lowMask & (1 << i)) list[n++] = i;
+      uint8_t page = (uint8_t)(((millis() - lowShownAt) / STOCK_PAGE_MS) % (n + 1));
+      if (page < n) {
+        uint8_t i = list[page];
+        // NEED rounded up and HAS down, so HAS always reads under NEED here
+        snprintf(l0, sizeof(l0), "LOW %s", STOCK_NAMES[i]);
+        snprintf(l1, sizeof(l1), "NEED %ld HAS %ld", (long)((lowNeedDg[i] + 9) / 10), (long)floorf(lowHaveDg[i] / 10.0f));
+      } else {
+        snprintf(l0, sizeof(l0), "REFILL HOPPER OR");
+        snprintf(l1, sizeof(l1), "#=GO ON *=BACK");
+      }
       break;
     }
     case STARTING:
@@ -250,11 +365,12 @@ void onKey(char k) {
   switch (state) {                     // screens where only some keys mean something
     case RUNNING:
     case STARTING:
+    case DRAIN_START:
       if (k == '*') {                  // STOP goes to the front of the queue
         Serial.println(linkRequest(LINK_STOP) ? "  -> STOP sent to the Mega" : "  -> STOP could not be queued!");
-      } else if (k == '#' && state == RUNNING && liveGet().flag == AGRILINK_FLAG_RESUME) {
-        // The answer to the Mega's question after a power cut. It does nothing
-        // unless the Mega is asking, so # can't start an auger at any other time.
+      } else if (k == '#' && state == RUNNING && (liveGet().flag == AGRILINK_FLAG_RESUME || liveGet().flag == AGRILINK_FLAG_FAULT)) {
+        // The answer to the Mega's question after a fault or a power cut. It does
+        // nothing unless the Mega is asking, so # can't start an auger at any other time.
         Serial.println(linkRequest(LINK_RESUME) ? "  -> RESUME sent to the Mega" : "  -> RESUME could not be queued");
       }
       return;
@@ -268,7 +384,8 @@ void onKey(char k) {
       break;
   }
 
-  if (k == 'D') { setState(HOME); resetEntry(); return; }
+  // D goes home from any menu; on HOME itself it opens the drain menu [10 Nov].
+  if (k == 'D') { setState(state == HOME ? DRAIN_SEL : HOME); resetEntry(); return; }
 
   switch (state) {
     case HOME:
@@ -293,7 +410,7 @@ void onKey(char k) {
         int m = entryN ? atoi(entry) : 0;
         resetEntry();
         if (m < AGRILINK_DOSE_MIN_G || m > AGRILINK_DOSE_MAX_G) setState(RANGE_ERR);
-        else { doseG = m; setState(CONFIRM); }
+        else { doseG = m; stockGate(false); }      // CONFIRM, or STOCK_LOW if a hopper is short
       } else if (k == '*') {
         if (entryN) resetEntry();      // clear what was typed
         else setState(RECIPE_OK);      // nothing typed: go back
@@ -306,11 +423,15 @@ void onKey(char k) {
       break;
 
     case CONFIRM:
+      if (k == '#') stockGate(true);   // checked again: stock may have been taken out meanwhile
+      else if (k == '*') setState(HOME);
+      break;
+
+    case STOCK_LOW:
       if (k == '#') {
-        // The only line in the firmware that starts a dose.
-        if (linkRequest(LINK_DOSE, AGRI_RECIPES[selRecipe].letter, doseG)) setState(STARTING);
-        else showMsg("LINK BUSY", "TRY AGAIN");
-      } else if (k == '*') setState(HOME);
+        Serial.println("[STOCK] started anyway: a hopper that runs out pauses the dose (EMPTY)");
+        sendDose();
+      } else if (k == '*') { resetEntry(); setState(DOSE_MASS); }   // type a smaller dose
       break;
 
     case TARE_ASK:
@@ -318,6 +439,18 @@ void onKey(char k) {
         if (linkRequest(LINK_TARE)) { tareAcked = false; setState(TARE_WAIT); }
         else showMsg("LINK BUSY", "TRY AGAIN");
       } else if (k == '*') setState(HOME);
+      break;
+
+    case DRAIN_SEL:                    // [10 Nov]
+      if (k >= 'A' && k <= 'C') { drainSel = k - 'A'; setState(DRAIN_OK); }
+      else if (k == '*') setState(HOME);
+      break;
+
+    case DRAIN_OK:
+      if (k == '#') {
+        if (linkRequest(LINK_DRAIN, (char)('A' + drainSel))) setState(DRAIN_START);
+        else showMsg("LINK BUSY", "TRY AGAIN");
+      } else if (k == '*') setState(DRAIN_SEL);
       break;
 
     default:
@@ -347,6 +480,12 @@ void handleLinkResults() {
       if (r.outcome == LINK_ACKED) { haveResult = false; setState(RUNNING); }
       else if (r.outcome == LINK_REFUSED && strcmp(r.nakReason, "BUSY") == 0) showMsg("MACHINE BUSY", "TRY AGAIN LATER");
       else if (r.outcome == LINK_REFUSED) showMsg("DOSE REFUSED", r.nakReason);
+      else if (r.outcome == LINK_MEGA_RESTARTED) showMsg("MEGA RESTARTED", "TRY AGAIN");
+      else showMsg("NO REPLY", "CHECK MEGA LINK");
+    } else if (r.cmd == LINK_DRAIN && state == DRAIN_START) {   // [10 Nov]
+      if (r.outcome == LINK_ACKED) { haveResult = false; setState(RUNNING); }   // the Mega draws the drain screens
+      else if (r.outcome == LINK_REFUSED && strcmp(r.nakReason, "BUSY") == 0) showMsg("MACHINE BUSY", "TRY AGAIN LATER");
+      else if (r.outcome == LINK_REFUSED) showMsg("DRAIN REFUSED", r.nakReason);
       else if (r.outcome == LINK_MEGA_RESTARTED) showMsg("MEGA RESTARTED", "TRY AGAIN");
       else showMsg("NO REPLY", "CHECK MEGA LINK");
     } else if (r.cmd == LINK_TARE && state == TARE_WAIT) {
@@ -381,9 +520,10 @@ void followMega() {
   }
 
   bool megaBusy = liveMegaOnline(s) && (s.flag == AGRILINK_FLAG_DOSING || s.flag == AGRILINK_FLAG_FAULT ||
-                                        s.flag == AGRILINK_FLAG_RESUME);
+                                        s.flag == AGRILINK_FLAG_RESUME || s.flag == AGRILINK_FLAG_DRAIN);
   if (megaBusy && state != RUNNING && state != TARE_WAIT) {
     Serial.println(s.flag == AGRILINK_FLAG_RESUME ? "The Mega has an unfinished dose: # continues it, * ends it"
+                 : s.flag == AGRILINK_FLAG_DRAIN  ? "The Mega is draining a hopper -- * stops it"
                                                   : "The Mega is dosing or faulted -- it owns the LCD now");
     haveResult = false;
     setState(RUNNING);
@@ -400,13 +540,22 @@ void followMega() {
     lastLiveAt = millis();
     char g[12];
     formatDg(g, sizeof(g), s.weightDg);
-    Serial.printf("[LIVE] %c %s g\n", s.flag, g);
+    if (s.flag == AGRILINK_FLAG_DRAIN && s.haveHoppers)   // draining: what is left in each hopper
+      Serial.printf("[LIVE] E hoppers %ld / %ld / %ld g\n", (long)(s.hopperDg[0] / 10), (long)(s.hopperDg[1] / 10),
+                    (long)(s.hopperDg[2] / 10));
+    else Serial.printf("[LIVE] %c %s g\n", s.flag, g);
   }
 }
 
 // Screens that go away by themselves.
 void timers() {
   if (state == RANGE_ERR && millis() - stateAt > RANGE_ERR_MS) setState(DOSE_MASS);
+  // [10 Nov] Refilled while the LOW screen shows: on to CONFIRM by itself. The HAS
+  // numbers on the screen follow the scale meanwhile.
+  if (state == STOCK_LOW && checkStock() && lowMask == 0) {
+    Serial.println("[STOCK] enough now -- CONFIRM");
+    setState(CONFIRM);
+  }
   if (state == MSG && millis() - stateAt > MSG_SHOW_MS) setState(HOME);
 }
 

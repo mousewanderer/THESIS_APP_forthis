@@ -11,7 +11,8 @@
 //  same seq memory), sends WT every 200 ms, runs a dose at about 10 g/s,
 //  sends DONE (actual = target +/- up to 3 g) until GOT. When idle it
 //  starts a demo dose every FAKE_AUTO_DOSE_S seconds, and every fourth
-//  demo dose stops with a fault (flag F) to test that screen too.
+//  demo dose pauses with a fault (flag F) to test that screen too: # on the
+//  keypad continues it, * ends it, and it ends by itself after 20 s.
 // =====================================================================
 #pragma once
 

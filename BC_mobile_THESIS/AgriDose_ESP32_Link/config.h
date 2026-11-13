@@ -45,6 +45,14 @@
 #define MEGA_TX_PIN 26             // -> Mega RX2 (D17)
 #define MEGA_RX_BUF 1024           // bytes; holds several seconds of Mega frames
 
+// ---- stock check before a dose (stock_check.h) [10 Nov 2026] ----
+// Grams each hopper must have ON TOP of its share of the dose, or the keypad
+// warns "LOW <hopper>" before starting it. Covers material the auger can't reach
+// and the 5 g a hopper reading may be behind. Placeholder: on the machine, run a
+// hopper until the auger feeds nothing, and see what it still weighs.
+//                          A hull  B compost  C ash
+#define STOCK_SPARE_G      {  20,      20,      20 }
+
 // ---- the Mega link task ----
 #define LINK_TASK_CORE     1
 #define LINK_TASK_PRIORITY 12      // above the web server's task (AsyncTCP uses 10)

@@ -24,10 +24,14 @@
 //  ESP32 -> Mega, sequenced (seq 1..255, the Mega answers ACK or NAK)
 //    PING,<seq>                    are you there?
 //    TARE,<seq>                    zero all three hopper scales (idle only)
-//    STOP,<seq>                    stop the augers now; also clears a fault
+//    STOP,<seq>                    stop the augers now; also ends a paused dose
 //    DOSE,<seq>,<A|B|C>,<grams>    one dose of recipe A/B/C, 300..900 g total
-//    RESUME,<seq>                  [ADDED 3 Nov] flag R only: continue the dose a
-//                                  power cut interrupted. STOP ends it instead.
+//    RESUME,<seq>                  [ADDED 3 Nov] flag F or R only: continue the dose
+//                                  a fault or a power cut interrupted. STOP ends it instead.
+//    DRAIN,<seq>,<A|B|C>           [ADDED 10 Nov] idle only: run that one hopper's auger
+//                                  to empty it (flag E). STOP ends it; so do no flow for
+//                                  15 s (empty), a dead load cell and a time limit. Not a
+//                                  dose: no DONE, no log row, not saved for a power cut.
 //
 //  ESP32 -> Mega, unsequenced (no answer)
 //    HELLO                         the ESP32 just booted: forget the seq memory
@@ -40,7 +44,7 @@
 //  Mega -> ESP32
 //    ACK,<seq>
 //    NAK,<seq>,<BUSY|RANGE|RECIPE|ARGS|UNKNOWN>    (seq 0 = could not read it)
-//    WT,<dg>,<I|D|F|R>             every 200 ms
+//    WT,<dg>,<I|D|F|R|E>           every 200 ms
 //    HW,<hull dg>,<compost dg>,<ash dg>   [ADDED 30 Oct] see HW below
 //    DONE,<seq>,<recipe>,<target dg>,<actual dg>   every 500 ms until GOT
 //    HELLO                         the Mega just booted
@@ -58,10 +62,13 @@
 //    I     idle: ready for a command
 //    D     dosing: an auger is running or the scale is settling
 //    F     fault: hopper empty, sensor error or timeout. The augers are
-//          stopped and the dose has ended. STOP clears the fault.
+//          stopped and the dose is paused [3 Nov; until then it ended here].
+//          RESUME continues it, STOP ends it and DONE reports what came out.
 //    R     [ADDED 3 Nov] the power went off during a dose. The augers stay off
 //          until the operator answers on the keypad: RESUME continues the dose,
 //          STOP ends it and DONE reports what came out. It keeps its old seq.
+//    E     [ADDED 10 Nov] draining: one hopper's auger runs to empty it (DRAIN).
+//          <dg> stays the last dose's mass; the hopper's weight going down is in HW.
 //
 //  SAFETY RULES
 //    - One command in flight: the ESP32 waits for ACK/NAK, or gives up,
@@ -69,7 +76,8 @@
 //    - A retry reuses the same seq. The Mega remembers the last seq and its
 //      answer: a repeated seq gets the same answer and is never run twice.
 //    - The ESP32 acts on each DONE seq once, so there is one log row per dose.
-//    - Only the ESP32 keypad starts or resumes a dose. The web dashboard is look-only.
+//    - Only the ESP32 keypad starts or resumes a dose, or drains a hopper. The web
+//      dashboard is look-only.
 // =====================================================================
 #pragma once
 
@@ -118,6 +126,7 @@ static inline bool agriHwChanged(const int32_t sent[3], const int32_t now[3], in
 #define AGRILINK_FLAG_DOSING  'D'
 #define AGRILINK_FLAG_FAULT   'F'
 #define AGRILINK_FLAG_RESUME  'R'
+#define AGRILINK_FLAG_DRAIN   'E'    // [ADDED 10 Nov] a hopper is being drained
 
 // ---- NAK reasons ----
 #define AGRILINK_NAK_BUSY     "BUSY"
@@ -139,6 +148,13 @@ static const AgriRecipe AGRI_RECIPES[3] = {
   {'C', 30, 60, 10},
 };
 
+// [ADDED 10 Nov] The hopper index (0 = A hull, 1 = B compost, 2 = C ash) for the
+// letter in DRAIN, or -1 for anything else.
+static inline int8_t agriHopperIndex(const char* s) {
+  if (s == nullptr || s[0] < 'A' || s[0] > 'C' || s[1] != 0) return -1;
+  return (int8_t)(s[0] - 'A');
+}
+
 // Returns the recipe for 'A', 'B' or 'C', or nullptr for anything else.
 static inline const AgriRecipe* agriRecipe(char letter) {
   for (uint8_t i = 0; i < 3; i++)
@@ -157,7 +173,8 @@ static inline void agriSplitDose(const AgriRecipe& r, int32_t totalDg,
 }
 
 static inline bool agriIsFlag(char c) {
-  return c == AGRILINK_FLAG_IDLE || c == AGRILINK_FLAG_DOSING || c == AGRILINK_FLAG_FAULT || c == AGRILINK_FLAG_RESUME;
+  return c == AGRILINK_FLAG_IDLE || c == AGRILINK_FLAG_DOSING || c == AGRILINK_FLAG_FAULT || c == AGRILINK_FLAG_RESUME ||
+         c == AGRILINK_FLAG_DRAIN;
 }
 
 // ---------------------------------------------------------------------

@@ -151,6 +151,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, summary:focus-visib
 .dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin: 0; font-size: 14px; }
 .dl dt { color: var(--muted); }
 .dl dd { margin: 0; font-weight: 700; font-variant-numeric: tabular-nums; }
+.dl dd.short { color: var(--red); }        /* [10 Nov] a recipe the stock can't cover */
+.stock .fine { margin-top: 8px; }
 .applist { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; font-size: 14px; }
 .applist li { padding: 6px 0; border-bottom: 1px solid var(--line); }
 .applist li:last-child { border-bottom: 0; }

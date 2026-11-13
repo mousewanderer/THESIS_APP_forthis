@@ -76,8 +76,29 @@ try {
   // Flag R (power cut during a dose): set by hand, because the mock never has one. It is put back at once.
   const resume = await js("(() => { const was = S.live.flag; S.live.flag = 'R'; updateMachine(); const r = { status: document.querySelector('.status').textContent, cls: document.querySelector('.status').className, alert: alerts().join(' ') }; S.live.flag = was; updateMachine(); return r; })()");
   check(/Waiting/.test(resume.status) && /Unfinished dose/.test(resume.status) && /fault/.test(resume.cls) && /power went off/.test(resume.alert), "flag R: the status and the bell tell the operator to answer at the keypad");
+  const paused = await js("(() => { const was = S.live.flag; S.live.flag = 'F'; updateMachine(); const r = { status: document.querySelector('.status').textContent, alert: alerts().join(' ') }; S.live.flag = was; updateMachine(); return r; })()");
+  check(/Fault/.test(paused.status) && /# or \*/.test(paused.status) && /paused/.test(paused.alert) && /press # on the keypad to continue/.test(paused.alert), "flag F: the status and the bell say the dose is paused and how to continue");
+  // [10 Nov] Flag E: a hopper is being drained from the keypad's D menu. Set by hand, put back at once.
+  const draining = await js("(() => { const was = S.live.flag; S.live.flag = 'E'; updateMachine(); const r = { status: document.querySelector('.status').textContent, cls: document.querySelector('.status').className, alert: alerts().length }; S.live.flag = was; updateMachine(); return r; })()");
+  check(/Draining/.test(draining.status) && /keypad D/.test(draining.status) && /busy/.test(draining.cls), "flag E: the status says a hopper is being drained: " + JSON.stringify(draining));
   const hg = await js("({ vals: [...document.querySelectorAll('.grid3 .gval')].map(t => t.textContent + t.nextSibling.textContent), total: document.querySelector('.total').textContent })");
   check(hg.vals.length === 3 && hg.vals.every(v => /^\d+(\.\d\d)?(g|kg)$/.test(v)) && /^\d/.test(hg.total), "hopper A/B/C gauges and total weight: " + JSON.stringify(hg));
+  // [10 Nov] Enough stock for: the mock's hoppers (4.2 / 3.6 / 0.9 kg) cover 900 g of every recipe.
+  const stock = await js("[...document.querySelectorAll('.stock dd')].map(d => d.textContent)");
+  check(stock.length === 3 && stock.every(t => t === "up to 900 g"), "enough stock: every recipe up to 900 g with full hoppers: " + JSON.stringify(stock));
+  // Low compost and too little ash: set by hand, because the mock's hoppers stay full. Put back at once.
+  const low = await js("(() => { const was = [S.live.stock_max_g, S.live.stock_short]; S.live.stock_max_g = [557, 900, 0]; S.live.stock_short = [2, 0, 4]; updateMachine(); const r = [...document.querySelectorAll('.stock dd')].map(d => ({ t: d.textContent, short: d.classList.contains('short') })); [S.live.stock_max_g, S.live.stock_short] = was; updateMachine(); return r; })()");
+  check(low[0].t === "up to 557 g: compost (Hopper B) is low" && !low[0].short && low[1].t === "up to 900 g" &&
+        low[2].t === "not even 300 g: refill wood ash (Hopper C)" && low[2].short, "low stock: says how much and which hopper to refill: " + JSON.stringify(low));
+  // [10 Nov] The bell: a hopper under 200 g is a low alert. Full hoppers give none.
+  check(await js("!alerts().some(a => / is low: /.test(a))"), "full hoppers: no low-hopper alert under the bell");
+  // Compost at 150 g, ash below zero (a jug lifted off), hull at exactly 200 g: set by hand, put back at once.
+  const lowBell = await js("(() => { const was = S.live.hoppers_dg; S.live.hoppers_dg = [2000, 1509, -30]; updateHeader(); const r = { list: alerts().filter(a => / is low: /.test(a)), badge: !document.getElementById('badge').hidden }; document.getElementById('bell').click(); r.sheet = [...document.querySelectorAll('#sheet .note')].map(n => n.textContent); S.live.hoppers_dg = was; updateHeader(); return r; })()");
+  check(lowBell.list.length === 2 && lowBell.list[0] === "Hopper B (compost) is low: 150 g left, under 200 g. Refill it before the next dose." &&
+        lowBell.list[1].startsWith("Hopper C (wood ash) is low: 0 g left") && lowBell.badge &&
+        lowBell.sheet.some(t => t.startsWith("Hopper B (compost) is low")), "low hoppers: the bell gets its red dot and names each hopper under 200 g: " + JSON.stringify(lowBell));
+  await js("document.getElementById('sheet-close').click()");
+  await sleep(300);
   await shot("1-machine");
   check(await noSideScroll(), "machine: no sideways scroll");
 

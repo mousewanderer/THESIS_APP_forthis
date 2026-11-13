@@ -19,15 +19,36 @@
 //
 //  FLOW   DOSE -> ACK -> dose the hoppers in DOSE_ORDER (rice hull, wood ash,
 //         then compost last) -> DONE, repeated every 500 ms until GOT.
-//  STOP   while dosing: augers off at once, DONE with what was dosed so far.
-//  FAULTS augers off, DONE with what was dosed so far, the fault stays on the
-//         LCD and WT sends flag F until STOP arrives (operator presses *).
-//           no weight change while the auger runs  -> "EMPTY: <hopper>"
+//  STOP   while dosing or paused: augers off at once, DONE with what was dosed so far.
+//  FAULTS augers off and the dose PAUSES [3 Nov; until then a fault ended it].
+//         WT sends flag F until the operator answers.
+//           under 1 g out in EMPTY_WINDOW_MS (15 s) while the auger runs -> "EMPTY: <hopper>"
 //           load cell stops answering               -> "SENSOR: <hopper>"
 //           hopper takes longer than HOPPER_TIMEOUT_MS -> "TIMEOUT: <hopper>"
-//         The old sketch let the operator refill and resume. After a fault
-//         the dose still ends: refill and start a new dose. (RESUME, added
-//         3 Nov, is only for a dose a power cut interrupted.)
+//         The LCD goes round what to check (FAULT_CHECKS), then "HANDS CLEAR?" /
+//         "#=GO ON *=END". An auger only starts again on the operator's #.
+//           # (RESUME)  the same hopper carries on from the grams already out. It is
+//                       weighed afresh first, so stock added or taken out during the
+//                       pause isn't counted. If the cause is still there, the fault
+//                       simply comes back.
+//           * (STOP)    the dose ends: DONE with what was dosed so far.
+//  KEEPING THE GRAMS [10 Nov]: material can't go back up an auger, so the grams
+//         already out of a hopper (keptG) only ever go up during a dose. If the
+//         re-weigh at a fault reads more than KEEP_TOUCH_G under them, something is
+//         pushing on the jug (a hand clearing a clog), and the kept grams are used.
+//         Until then such a re-weigh became the new starting point, so after # the
+//         count could start again from 0 g and the hopper got its share twice.
+//  EMPTY WINDOW [10 Nov]: 5 s -> 15 s, at the user's request (doses paused too soon).
+//  DRAIN  [10 Nov, later] D on the keypad's HOME screen, then A, B or C, then #:
+//         DRAIN,<seq>,<hopper> runs that one auger at its PWM_MAX to empty the
+//         hopper (flag E). LCD "DRAINING COMP" / "OUT 1234g *=STOP". It stops on:
+//           * (STOP)                         -> "DRAIN STOPPED"
+//           under 1 g out in EMPTY_WINDOW_MS  -> "NO FLOW: EMPTY?" (empty, or stuck)
+//           the load cell stops answering     -> "DRAIN: NO SENSOR"
+//           DRAIN_MAX_MS (10 min)             -> "DRAIN TIME UP" (D again to go on)
+//         then "<HOPPER> 1234g OUT" for RESULT_SHOW_MS. Idle only. Not a dose: no
+//         DONE and no log row, the WT mass stays the last dose's, and nothing is
+//         saved, so after a power cut the auger stays off.
 //  HW     [30 Oct] the three hopper weights for the dashboard, sent only when
 //         one moved more than 5 g since the last HW (AgriLink.h: noise is not
 //         sent), at most every 500 ms, and every 10 s anyway.
@@ -52,6 +73,8 @@
 //  SAVED STATE [3 Nov] (dose_state.h): the Mega gets no warning of a power cut,
 //  so it saves to EEPROM while it runs: at every step of a dose, and every 5 s
 //  while an auger turns. What it does with the save at the next power-on:
+//    a dose was paused   as below, but with the saved grams and no weighing: the
+//    by a fault          auger was off, and the operator may have refilled the hopper.
 //    a dose was running  NO AUGER MOVES. The hopper that was running is weighed,
 //                        and the LCD asks "RESUME A 600g?" / "312g #=YES *=NO"
 //                        (flag R). # on the keypad (RESUME) carries on from there,
@@ -150,6 +173,9 @@
 #define AUG_C_LEN  28
 // =====================================================================
 
+// Must stay ABOVE every function that takes it. See FAULT_CHECKS for what each one tells the operator.
+enum FaultKind { FAULT_EMPTY, FAULT_SENSOR, FAULT_TIMEOUT };
+
 // Must stay ABOVE every function that takes a Hopper&.
 // Everything remembered about one hopper: its pins, its calibration, and
 // how the current dose is going.
@@ -167,6 +193,10 @@ struct Hopper {
   float dispensed;    // total grams dispensed this dose
   float lastProgG;    // empty-detection reference
   uint32_t lastProgAt; // when lastProgG last went up
+  float keptG;        // grams surely out of this hopper this dose; only goes up (keepGrams)
+  float recentG[3];   // the last three readings of this run, as grams dispensed...
+  uint8_t recentN;    // ...how many of them are filled (0..3)...
+  uint8_t recentAt;   // ...and where the next one goes
   float weightG;      // latest absolute weight (stock reading)
   uint32_t lastReadAt; // when the HX711 last gave a reading while dosing
   bool  haveW;        // weightG holds a real reading
@@ -315,9 +345,26 @@ const float    TOLERANCE_G        = 2.0f;    // accept a hopper if at most this 
 const uint8_t  MAX_TRIMS          = 3;       // slow top-up passes after the first stop
 const uint32_t SETTLE_MS          = 800UL;   // let falling material and the load cell settle
 
-// ---- empty-hopper detection (unchanged) ----
+// ---- empty-hopper detection ----
 const float    EMPTY_MIN_PROGRESS_G = 1.0f;    // must gain this many grams...
-const uint32_t EMPTY_WINDOW_MS      = 5000UL;  // ...within this time, or it's "empty"
+const uint32_t EMPTY_WINDOW_MS      = 15000UL; // ...within this time, or it's "empty" [10 Nov 2026: 5 s -> 15 s, user's request]
+
+// ---- keeping the grams already out [10 Nov 2026] ----
+// A re-weigh at a fault this far under the grams already out (keptG) is not
+// believed: the jug is being pushed. A hand on the jug read about 136 g on 2 Nov.
+const float    KEEP_TOUCH_G = 10.0f;
+
+// ---- what the LCD tells the operator after a fault ----
+// In FaultKind order. Each line is at most 16 characters; nullptr = no more
+// checks. The LCD shows them in turn, FAULT_PAGE_MS each, then what to press.
+const uint32_t FAULT_PAGE_MS = 2500UL;
+const char* const FAULT_NAMES[3] = { "EMPTY", "SENSOR", "TIMEOUT" };
+#define FAULT_MAX_CHECKS 3
+const char* const FAULT_CHECKS[3][FAULT_MAX_CHECKS] = {
+  { "REFILL HOPPER?",   "STUCK? TAP JUG", "MOTOR POWER ON?" },   // no weight change while the auger ran
+  { "CHECK LOAD WIRES", "PUSH PLUGS IN",  nullptr },             // the load cell stopped answering
+  { "FEED TOO SLOW",    "STUCK? TAP JUG", "HOPPER LOW?" },       // the hopper took longer than HOPPER_TIMEOUT_MS
+};
 
 // How fast the auger should go for the remaining grams: 1.0 = full speed
 // (BULK), falling to 0.0 at the target (SLOW), 0.0 in trims (TRIM).
@@ -484,11 +531,14 @@ int32_t totalDispensedDg() {
 //   M_IDLE      waiting for a command; the LCD shows the ESP32's menu
 //   M_DOSING    an auger is running (curHopper)
 //   M_SETTLING  the auger has been cut; waiting SETTLE_MS before weighing again
-//   M_FAULT     the dose ended on a fault; waiting for STOP (the * key)
+//   M_FAULT     a fault paused the dose: augers off, the LCD says what to check,
+//               and it waits for RESUME (#) or STOP (*)
 //   M_RESULT    "DOSE DONE" or "DOSE STOPPED" on the LCD for RESULT_SHOW_MS
 //   M_RESUME    power came back with a dose unfinished: augers off, the LCD
 //               asks, and it waits for RESUME (#) or STOP (*)
-enum MixState { M_IDLE, M_DOSING, M_SETTLING, M_FAULT, M_RESULT, M_RESUME };
+//   M_DRAIN     [10 Nov] one auger runs to empty its hopper (DRAIN), until STOP,
+//               no flow, a dead load cell or DRAIN_MAX_MS
+enum MixState { M_IDLE, M_DOSING, M_SETTLING, M_FAULT, M_RESULT, M_RESUME, M_DRAIN };
 MixState mstate = M_IDLE;
 int8_t curHopper = -1;         // hopper index (0 = hull, 1 = compost, 2 = ash) being dosed
 int8_t curPos = -1;            // its position in DOSE_ORDER
@@ -503,16 +553,34 @@ const uint32_t LINK_LOST_MS      = 6000UL;    // no frame from the ESP32 this lo
 
 uint32_t hopperStartedAt = 0, resultShownAt = 0, settleStartedAt = 0;
 
+// ---- draining a hopper [10 Nov] ----
+// Kept apart from the Hopper fields of a dose, so a drain can't change the
+// last dose's grams, its save or what it learned.
+const uint32_t DRAIN_MAX_MS = 600000UL;                      // 10 min, then it stops; D again goes on
+const char* const DRAIN_NAMES[3] = { "HULL", "COMP", "ASH" }; // as on the ESP32's D menu
+int8_t   drainIdx = -1;        // the hopper being drained (0 = A hull, 1 = B compost, 2 = C ash)
+float    drainStartG = 0;      // its weight when the drain began
+float    drainLastProgG = 0;   // no-flow check: grams out when the timer last restarted...
+uint32_t drainLastProgAt = 0;  // ...and when
+uint32_t drainStartedAt = 0, drainLastReadAt = 0;
+
+// The fault that paused the dose, and which of its LCD screens is showing.
+FaultKind faultKind = FAULT_EMPTY;
+uint8_t   faultPage = 0;
+uint32_t  faultPageAt = 0;
+
 // The dose being run now (from its DOSE command).
 uint8_t curSeq = 0;
 char    curRecipe = 'A';
 int32_t curTargetDg = 0;
 
-// I = idle, D = dosing, F = fault, R = waiting to resume. Sent in every WT frame.
+// I = idle, D = dosing, F = paused by a fault, R = waiting to resume after a
+// power cut, E = draining a hopper. Sent in every WT frame.
 char currentFlag() {
   if (mstate == M_DOSING || mstate == M_SETTLING) return AGRILINK_FLAG_DOSING;
   if (mstate == M_FAULT) return AGRILINK_FLAG_FAULT;
   if (mstate == M_RESUME) return AGRILINK_FLAG_RESUME;
+  if (mstate == M_DRAIN) return AGRILINK_FLAG_DRAIN;
   return AGRILINK_FLAG_IDLE;
 }
 
@@ -643,8 +711,9 @@ void queueSave() {
     s.recipe = doneRecipe;
     s.targetDg = doneTargetDg;
     s.actualDg = doneActualDg;
-  } else if (mstate == M_DOSING || mstate == M_SETTLING || mstate == M_RESUME) {
-    s.phase = STATE_PHASE_RUNNING;
+  } else if (mstate == M_DOSING || mstate == M_SETTLING || mstate == M_RESUME || mstate == M_FAULT) {
+    bool paused = mstate == M_FAULT || (mstate == M_RESUME && saved.phase == STATE_PHASE_FAULT);
+    s.phase = paused ? STATE_PHASE_FAULT : STATE_PHASE_RUNNING;
     s.seq = curSeq;
     s.recipe = curRecipe;
     s.targetDg = curTargetDg;
@@ -711,7 +780,8 @@ void restoreSavedDose() {
   }
 
   const AgriRecipe* r = agriRecipe(saved.recipe);
-  if (saved.phase != STATE_PHASE_RUNNING || r == nullptr || saved.curPos < -1 || saved.curPos > 2) {
+  bool unfinished = saved.phase == STATE_PHASE_RUNNING || saved.phase == STATE_PHASE_FAULT;
+  if (!unfinished || r == nullptr || saved.curPos < -1 || saved.curPos > 2) {
     for (uint8_t i = 0; i < 3; i++) hoppers[i].dispensed = 0;
     Serial.println("Saved dose can't be used -- dropped");
     return;
@@ -729,6 +799,7 @@ void restoreSavedDose() {
   for (uint8_t i = 0; i < 3; i++) {
     hoppers[i].done = saved.doneMask & (1 << i);
     hoppers[i].base = 0;
+    hoppers[i].keptG = hoppers[i].dispensed;   // the saved grams; the running hopper's is set below
   }
 
   // The hopper that was running: the scale also counts what came out after the
@@ -741,8 +812,14 @@ void restoreSavedDose() {
     h.trims = saved.trims;
     h.base = saved.base;
     h.startG = saved.startG;
-    delay(TARE_WAIT_MS);                       // the load cell has only just powered up
-    if (h.scale.wait_ready_timeout(1000)) {
+    // Paused by a fault: the auger was off when this was saved, so the saved grams
+    // are exact. The scale can't help: the operator may have refilled the hopper.
+    bool weigh = saved.phase == STATE_PHASE_RUNNING;
+    if (weigh) delay(TARE_WAIT_MS);            // the load cell has only just powered up
+    if (!weigh) {
+      Serial.print("  "); Serial.print(h.label); Serial.print(": paused by a fault at ");
+      Serial.print(saved.dispensed[i], 1); Serial.println(" g");
+    } else if (h.scale.wait_ready_timeout(1000)) {
       float w = h.scale.get_units(10);
       h.weightG = w;
       h.haveW = true;
@@ -755,6 +832,7 @@ void restoreSavedDose() {
       trusted = false;
       Serial.print("  "); Serial.print(h.label); Serial.println(": no reading from HX711, using the saved grams");
     }
+    h.keptG = h.dispensed;
   }
 
   mstate = M_RESUME;
@@ -764,7 +842,7 @@ void restoreSavedDose() {
   snprintf(l1, sizeof(l1), "%ldg #=YES *=NO", (long)(totalDispensedDg() / 10));
   lcdShow(l0, l1);
   Serial.print("Dose "); Serial.print(curSeq);
-  Serial.println(" was cut off by a power cut. Augers stay off: # on the keypad continues it, * ends it.");
+  Serial.println(" was not finished when the power went. Augers stay off: # on the keypad continues it, * ends it.");
 }
 
 // ----------------------------------------------------------- dosing --
@@ -804,15 +882,84 @@ void showResult(const char* headline) {
   sendWt();                      // tell the ESP32 at once (flag I)
 }
 
-// A fault ends the dose and waits for STOP. what = "EMPTY", "SENSOR", "TIMEOUT".
-void enterFault(const char* what, uint8_t i) {
-  endDose();
-  mstate = M_FAULT;
+// One screen of a fault: a thing to check, or (the last page) what to press.
+void showFaultPage() {
+  const char* check = faultPage < FAULT_MAX_CHECKS ? FAULT_CHECKS[faultKind][faultPage] : nullptr;
+  if (check == nullptr) { lcdShow("HANDS CLEAR?", "#=GO ON *=END"); return; }
   char l0[LCD_BUF];
-  snprintf(l0, sizeof(l0), "%s: %s", what, hoppers[i].label);
-  lcdShow(l0, "PRESS * TO CLEAR");
-  Serial.print("FAULT "); Serial.println(l0);
+  snprintf(l0, sizeof(l0), "%s: %s", FAULT_NAMES[faultKind], hoppers[curHopper].label);
+  lcdShow(l0, check);
+}
+
+// While paused: the next screen every FAULT_PAGE_MS, round and round.
+void faultService() {
+  if (millis() - faultPageAt < FAULT_PAGE_MS) return;
+  faultPageAt = millis();
+  bool wasLast = faultPage >= FAULT_MAX_CHECKS || FAULT_CHECKS[faultKind][faultPage] == nullptr;
+  faultPage = wasLast ? 0 : faultPage + 1;
+  showFaultPage();
+}
+
+// The middle one of three numbers.
+float median3(float a, float b, float c) {
+  if (a > b) { float t = a; a = b; b = t; }    // now a <= b
+  if (b > c) b = c;                            // b = the smaller of b and c
+  return a > b ? a : b;
+}
+
+// After each reading while the auger runs: raises keptG to the middle of the
+// last three readings, so one bad HX711 reading can't raise it.
+void noteKept(Hopper& h) {
+  h.recentG[h.recentAt] = h.dispensed;
+  h.recentAt = (h.recentAt + 1) % 3;
+  if (h.recentN < 3) { h.recentN++; return; }
+  float m = median3(h.recentG[0], h.recentG[1], h.recentG[2]);
+  if (m > h.keptG) h.keptG = m;
+}
+
+// The grams already out of hopper h, from weighedG, a reading with its auger off.
+// Material can't go back up the auger, so a reading more than KEEP_TOUCH_G under
+// the grams already out means the jug is being pushed (a hand clearing a clog):
+// then the grams already out are kept. Written so a NaN keeps them too.
+float keepGrams(Hopper& h, float weighedG) {
+  if (weighedG >= h.keptG - KEEP_TOUCH_G) {
+    if (weighedG > h.keptG) h.keptG = weighedG;
+    return weighedG;
+  }
+  Serial.print("  "); Serial.print(h.label); Serial.print(": the scale says ");
+  Serial.print(weighedG, 1); Serial.print(" g, but ");
+  Serial.print(h.keptG, 1); Serial.println(" g were already out -- jug touched? keeping those");
+  return h.keptG;
+}
+
+// A fault pauses the dose and waits for the operator: # (RESUME) carries on,
+// * (STOP) ends it. Nothing but those two moves it on.
+void enterFault(FaultKind kind, uint8_t i) {
+  stopAllAugers();
+  curHopper = i;
+  faultKind = kind;
+  faultPage = 0;
+  faultPageAt = millis();
+  mstate = M_FAULT;
+  showFaultPage();
   sendWt();                      // tell the ESP32 at once (flag F)
+  Hopper& h = hoppers[i];
+  Serial.print("FAULT "); Serial.print(FAULT_NAMES[kind]); Serial.print(": "); Serial.println(h.label);
+
+  // Count what came out, now, while it can still be weighed: from here on the
+  // operator may refill the hopper. A dead load cell keeps its last reading.
+  // Either way, never less than what was already out (keepGrams).
+  if (kind != FAULT_SENSOR && h.scale.wait_ready_timeout(1000)) {
+    delay(SETTLE_MS);
+    float w = h.scale.get_units(3);
+    h.weightG = w; h.haveW = true;
+    h.dispensed = keepGrams(h, h.base + (h.startG - w));
+  } else {
+    h.dispensed = keepGrams(h, h.dispensed);
+  }
+  saveNow();                     // a power cut during the pause keeps these grams
+  faultPageAt = millis();
+  sendWt();
 }
 
 // Reads a fresh starting weight and starts the auger (unchanged). Returns
@@ -825,6 +972,8 @@ bool beginHopper(uint8_t i) {
   if (!h.scale.wait_ready_timeout(1000)) return false;
   h.startG = h.scale.get_units(10);
   h.weightG = h.startG; h.haveW = true;
+  if (h.dispensed > h.keptG) h.keptG = h.dispensed;   // this run starts from the grams already out
+  h.recentN = 0; h.recentAt = 0;
   h.lastProgG = h.dispensed;
   h.lastProgAt = millis();
   h.lastReadAt = millis();
@@ -842,7 +991,7 @@ void beginAtPos(int pos) {
   curPos = pos;
   uint8_t i = DOSE_ORDER[pos];
   mstate = M_DOSING;
-  if (!beginHopper(i)) enterFault("SENSOR", i);
+  if (!beginHopper(i)) enterFault(FAULT_SENSOR, i);
 }
 
 // Position in DOSE_ORDER of the next hopper that still has something to dose.
@@ -888,6 +1037,7 @@ void startDose(uint8_t seq, const AgriRecipe& r, int grams) {
     hoppers[i].done = (hoppers[i].targetG <= 0); // nothing to dose here: skip this hopper
     hoppers[i].base = 0;
     hoppers[i].dispensed = 0;
+    hoppers[i].keptG = 0;
     hoppers[i].trims = 0;
     hoppers[i].mode = "BULK";
   }
@@ -904,12 +1054,12 @@ void startDose(uint8_t seq, const AgriRecipe& r, int grams) {
   beginAtPos(pos);
 }
 
-// # on the keypad after a power cut: carries on with the hopper that was
-// running, or moves to the next one if it had finished. Only ever called by
-// the RESUME command, so an auger never starts by itself at power-on.
+// # on the keypad after a fault or a power cut: carries on with the hopper that
+// was running, or moves to the next one if it had finished. Only ever called by
+// the RESUME command, so an auger never starts by itself.
 void resumeDose() {
-  Serial.println("Resuming the dose");
-  lcdShow("RESUMING DOSE", "PLEASE WAIT...");
+  Serial.println("Continuing the dose");
+  lcdShow("CONTINUING DOSE", "HANDS CLEAR!");
   mstate = M_DOSING;
   sendWt();                      // flag D goes out before the 1 s weighing
   if (curPos < 0 || hoppers[DOSE_ORDER[curPos]].done) { advanceToNext(); return; }
@@ -918,10 +1068,10 @@ void resumeDose() {
   curHopper = i;
   if (h.targetG - h.dispensed <= TOLERANCE_G) { completeHopper(h); return; }  // it had already got there
   h.base = h.dispensed;          // keep what is already out; beginHopper weighs afresh from here
-  if (!beginHopper(i)) enterFault("SENSOR", i);
+  if (!beginHopper(i)) enterFault(FAULT_SENSOR, i);
 }
 
-// Back to idle after the result screen or a cleared fault: the menu returns
+// Back to idle after the result screen: the menu returns
 // to the LCD and the stock readings start again.
 void returnToIdle() {
   mstate = M_IDLE;
@@ -944,7 +1094,7 @@ void beginSettle(Hopper& h) {
 // After the settle delay: weigh again, learn the coast, then top up or finish (unchanged).
 void finishSettle() {
   Hopper& h = hoppers[curHopper];
-  if (!h.scale.wait_ready_timeout(1000)) { enterFault("SENSOR", curHopper); return; }
+  if (!h.scale.wait_ready_timeout(1000)) { enterFault(FAULT_SENSOR, curHopper); return; }
 
   float w = h.scale.get_units(3);
   h.weightG = w; h.haveW = true;
@@ -969,7 +1119,7 @@ void finishSettle() {
     h.trims++;
     h.base = finalG;                           // keep what is already in
     mstate = M_DOSING;
-    if (!beginHopper(curHopper)) enterFault("SENSOR", curHopper);
+    if (!beginHopper(curHopper)) enterFault(FAULT_SENSOR, curHopper);
     return;
   }
 
@@ -987,7 +1137,7 @@ void updateDosing() {
 
   // Time limit. The timer restarts at each top-up (beginHopper).
   if (millis() - hopperStartedAt > HOPPER_TIMEOUT_MS) {
-    enterFault("TIMEOUT", curHopper);
+    enterFault(FAULT_TIMEOUT, curHopper);
     return;
   }
 
@@ -995,7 +1145,7 @@ void updateDosing() {
   // (unplugged, broken wire) stop at once instead of feeding blind.
   if (!h.scale.is_ready() && millis() - h.lastReadAt > SENSOR_STALE_MS) {
     Serial.print("  "); Serial.print(h.label); Serial.println(": no reading from HX711 -- stopping");
-    enterFault("SENSOR", curHopper);
+    enterFault(FAULT_SENSOR, curHopper);
     return;
   }
 
@@ -1004,6 +1154,7 @@ void updateDosing() {
     h.lastReadAt = millis();
     h.weightG = w; h.haveW = true;
     h.dispensed = h.base + (h.startG - w);   // loss-in-weight: weight goes DOWN as it feeds
+    noteKept(h);                             // the grams surely out so far
     float remaining = h.targetG - h.dispensed;
 
     // Progress check for the EMPTY fault: the timer restarts each time another
@@ -1019,7 +1170,7 @@ void updateDosing() {
 
     if (millis() - h.lastProgAt > EMPTY_WINDOW_MS) {
       if (h.trims > 0) { completeHopper(h); return; }   // trims are best effort, no fault
-      enterFault("EMPTY", curHopper);
+      enterFault(FAULT_EMPTY, curHopper);
       return;
     }
   }
@@ -1027,6 +1178,101 @@ void updateDosing() {
   // a pulsed auger's bursts are timed to the millisecond.
   runAuger(h, augerPwm(h, h.targetG - h.dispensed));
   showDosing(h);
+}
+
+// ------------------------------------------------- draining [10 Nov] --
+// Grams out of the hopper being drained: the middle one of the last three
+// readings, so one bad HX711 reading can't stop the drain or jump the number.
+float drainRecentG[3];
+uint8_t drainRecentN = 0, drainRecentAt = 0;
+float drainOutG = 0;
+
+// "DRAINING COMP" / "OUT 1234g *=STOP"
+void showDrain() {
+  char l0[LCD_BUF], l1[LCD_BUF];
+  snprintf(l0, sizeof(l0), "DRAINING %s", DRAIN_NAMES[drainIdx]);
+  snprintf(l1, sizeof(l1), "OUT %ldg *=STOP", (long)(drainOutG < 0 ? 0 : drainOutG + 0.5f));
+  lcdShow(l0, l1);
+}
+
+// Ends a drain: auger off, then "<why>" / "COMP 1234g OUT" for RESULT_SHOW_MS.
+// weigh = weigh once more after the material settles (not with a dead load cell).
+void endDrain(const char* why, bool weigh) {
+  stopAllAugers();
+  Hopper& h = hoppers[drainIdx];
+  if (weigh && h.scale.wait_ready_timeout(1000)) {
+    delay(SETTLE_MS);              // what is still falling lands first
+    h.weightG = h.scale.get_units(3);
+    h.haveW = true;
+    drainOutG = drainStartG - h.weightG;
+  }
+  if (drainOutG < 0) drainOutG = 0;
+  char l1[LCD_BUF];
+  snprintf(l1, sizeof(l1), "%s %ldg OUT", DRAIN_NAMES[drainIdx], (long)(drainOutG + 0.5f));
+  mstate = M_RESULT;
+  resultShownAt = millis();
+  lcdShow(why, l1);
+  sendWt();                        // tell the ESP32 at once (flag I)
+  Serial.print("Drain "); Serial.print(h.label); Serial.print(" ended ("); Serial.print(why);
+  Serial.print("): "); Serial.print(drainOutG, 1); Serial.println(" g out");
+}
+
+// DRAIN from the keypad: weighs the hopper, then starts its auger at PWM_MAX.
+// Only called while idle (handleDrain). Takes about 1 s (10 readings).
+void beginDrain(uint8_t i) {
+  Hopper& h = hoppers[i];
+  stopAllAugers();                 // only this one may turn
+  drainIdx = i;
+  drainStartG = h.weightG;
+  drainOutG = 0;
+  drainRecentN = 0; drainRecentAt = 0;
+  mstate = M_DRAIN;
+  lcdShow("STARTING DRAIN", "HANDS CLEAR!");
+  sendWt();                        // flag E goes out before the 1 s weighing
+  if (!h.scale.wait_ready_timeout(1000)) {
+    Serial.print(h.label); Serial.println(": HX711 not responding -- no drain");
+    endDrain("DRAIN: NO SENSOR", false);
+    return;
+  }
+  drainStartG = h.scale.get_units(10);
+  h.weightG = drainStartG;
+  h.haveW = true;
+  drainLastProgG = 0;
+  drainStartedAt = drainLastProgAt = drainLastReadAt = millis();
+  enableDriver(h);
+  runAuger(h, h.pwmMax);           // full speed, no pulsing: there is no target to stop on
+  showDrain();
+  Serial.print("Drain "); Serial.print(h.label); Serial.print(": ");
+  Serial.print(drainStartG, 1); Serial.println(" g in the hopper, auger on. * stops it.");
+}
+
+// Runs on every loop pass while draining: the time limit, the load cell, the
+// grams out, and the no-flow stop (the hopper is empty, or stuck).
+void updateDrain() {
+  Hopper& h = hoppers[drainIdx];
+  if (millis() - drainStartedAt > DRAIN_MAX_MS) { endDrain("DRAIN TIME UP", true); return; }
+  if (!h.scale.is_ready() && millis() - drainLastReadAt > SENSOR_STALE_MS) {
+    Serial.print("  "); Serial.print(h.label); Serial.println(": no reading from HX711 -- drain stopped");
+    endDrain("DRAIN: NO SENSOR", false);
+    return;
+  }
+  if (h.scale.is_ready()) {
+    float w = h.scale.get_units(1);
+    drainLastReadAt = millis();
+    h.weightG = w;
+    h.haveW = true;
+    drainRecentG[drainRecentAt] = drainStartG - w;
+    drainRecentAt = (drainRecentAt + 1) % 3;
+    if (drainRecentN < 3) drainRecentN++;
+    if (drainRecentN == 3) drainOutG = median3(drainRecentG[0], drainRecentG[1], drainRecentG[2]);
+    // The no-flow timer restarts each time another EMPTY_MIN_PROGRESS_G has come out.
+    if (drainOutG >= drainLastProgG + EMPTY_MIN_PROGRESS_G) {
+      drainLastProgG = drainOutG;
+      drainLastProgAt = millis();
+    }
+    if (millis() - drainLastProgAt > EMPTY_WINDOW_MS) { endDrain("NO FLOW: EMPTY?", true); return; }
+  }
+  showDrain();
 }
 
 // Round-robin read of all three load cells while idle (unchanged).
@@ -1064,10 +1310,15 @@ void updateProcess() {
       if (millis() - resultShownAt >= RESULT_SHOW_MS) returnToIdle();
       break;
     case M_FAULT:
-      break;                     // waits for STOP from the ESP32
+      updateIdleWeights();       // the augers stay off; the gauges show a refill as it happens
+      faultService();            // what to check, then what to press
+      break;                     // waits for RESUME or STOP from the ESP32
     case M_RESUME:
       updateIdleWeights();       // the auger stays off; the hopper gauges keep working
       break;                     // waits for RESUME or STOP from the ESP32
+    case M_DRAIN:
+      updateDrain();
+      break;
   }
 }
 
@@ -1085,15 +1336,18 @@ void tareAll() {
 }
 
 // -------------------------------------------------------- frame handling --
-// What STOP does depends on the state: it ends a dose, or clears a fault.
+// STOP ends a dose that is running or paused, and reports what came out.
 void handleStop() {
-  if (mstate == M_DOSING || mstate == M_SETTLING || mstate == M_RESUME) {
-    Serial.println(mstate == M_RESUME ? "STOP: the unfinished dose ends here" : "STOP: augers stopped by the operator");
+  if (mstate == M_DRAIN) {       // [10 Nov] a drain just ends: no DONE, it is not a dose
+    Serial.println("STOP: the drain ends here");
+    endDrain("DRAIN STOPPED", true);
+    return;
+  }
+  bool running = mstate == M_DOSING || mstate == M_SETTLING;
+  if (running || mstate == M_RESUME || mstate == M_FAULT) {
+    Serial.println(running ? "STOP: augers stopped by the operator" : "STOP: the paused dose ends here");
     endDose();
     showResult("DOSE STOPPED");
-  } else if (mstate == M_FAULT) {
-    Serial.println("STOP: fault cleared");
-    returnToIdle();
   } else {
     stopAllAugers();             // nothing is running, but make sure
   }
@@ -1111,6 +1365,15 @@ void handleDose(uint8_t seq, char* f[], uint8_t n) {
   if (!machineIdle() || doneUnacked) { nak(seq, AGRILINK_NAK_BUSY); return; }
   ack(seq);                      // answer first: starting takes about 1 s (first weighing)
   startDose(seq, *r, (int)grams);
+}
+
+// [10 Nov] DRAIN,<seq>,<A|B|C>: empty one hopper. Idle only, like DOSE and TARE.
+void handleDrain(uint8_t seq, char* f[], uint8_t n) {
+  int8_t i = (n == 3) ? agriHopperIndex(f[2]) : -1;
+  if (i < 0) { nak(seq, AGRILINK_NAK_ARGS); return; }
+  if (!machineIdle()) { nak(seq, AGRILINK_NAK_BUSY); return; }
+  ack(seq);                      // answer first: starting takes about 1 s (the weighing)
+  beginDrain((uint8_t)i);
 }
 
 // DISP,<line 1>,<line 2>: the ESP32's menu. Stored always, shown only when idle.
@@ -1159,7 +1422,7 @@ void handleFrame(char* body) {
   // ---- sequenced: always answered with ACK or NAK ----
   bool known = strcmp(verb, "PING") == 0 || strcmp(verb, "TARE") == 0 ||
                strcmp(verb, "STOP") == 0 || strcmp(verb, "DOSE") == 0 ||
-               strcmp(verb, "RESUME") == 0;
+               strcmp(verb, "RESUME") == 0 || strcmp(verb, "DRAIN") == 0;
   uint8_t seq = 0;
   bool haveSeq = (n >= 2) && agriParseSeq(f[1], seq);
   if (!known) { nak(haveSeq ? seq : 0, AGRILINK_NAK_UNKNOWN); return; }
@@ -1172,6 +1435,7 @@ void handleFrame(char* body) {
   }
 
   if (strcmp(verb, "DOSE") == 0) { handleDose(seq, f, n); return; }
+  if (strcmp(verb, "DRAIN") == 0) { handleDrain(seq, f, n); return; }
   if (n != 2) { nak(seq, AGRILINK_NAK_ARGS); return; }
 
   if (strcmp(verb, "PING") == 0) {
@@ -1180,7 +1444,7 @@ void handleFrame(char* body) {
     ack(seq);
     handleStop();
   } else if (strcmp(verb, "RESUME") == 0) {
-    if (mstate != M_RESUME) { nak(seq, AGRILINK_NAK_BUSY); return; }
+    if (mstate != M_RESUME && mstate != M_FAULT) { nak(seq, AGRILINK_NAK_BUSY); return; }
     ack(seq);                    // answer first: starting takes about 1 s (first weighing)
     resumeDose();
   } else if (strcmp(verb, "TARE") == 0) {

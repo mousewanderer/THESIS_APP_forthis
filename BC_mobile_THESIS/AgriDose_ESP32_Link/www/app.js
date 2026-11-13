@@ -298,6 +298,25 @@ function massText(dg) {
   return Math.abs(g) >= 1000 ? [(g / 1000).toFixed(2), 'kg'] : [String(Math.round(g)), 'g'];
 }
 
+// [10 Nov 2026] The biggest dose of each recipe the hoppers hold. The ESP32 works it
+// out with the keypad's rule (stock_check.h): each hopper's share plus a small spare.
+// stock_max_g: grams per recipe A, B, C (0 = not even the smallest dose);
+// stock_short: the hoppers that limit it, bit 0 = hopper A.
+function stockView(s, hw) {
+  if (!hw || !s.stock_max_g) return [el('p', { class: 'fine', text: 'Waiting for the hopper weights.' })];
+  const names = (mask) => HOPPERS.filter((_, i) => mask & (1 << i))
+    .map(([hopper, what]) => what.toLowerCase() + ' (' + hopper + ')').join(' and ');
+  const rows = ['A', 'B', 'C'].flatMap((recipe, i) => {
+    const max = s.stock_max_g[i], mask = s.stock_short[i];
+    const text = max >= AGRI.doseMaxG ? 'up to ' + max + ' g'
+      : max > 0 ? 'up to ' + max + ' g: ' + names(mask) + ' is low'
+      : 'not even ' + AGRI.doseMinG + ' g: refill ' + names(mask);
+    return [el('dt', { text: 'Recipe ' + recipe }), el('dd', { class: max > 0 ? '' : 'short', text })];
+  });
+  return [el('dl', { class: 'dl' }, ...rows),
+    el('p', { class: 'fine', text: 'Counts a small spare in each hopper. Before a dose that needs more, the keypad shows LOW and the hopper.' })];
+}
+
 let M = null;                           // the Machine tab's live parts, while it is shown
 function renderMachine(body) {
   const box = el('div', { class: 'gauge' });
@@ -306,6 +325,7 @@ function renderMachine(body) {
     gauge: makeGauge(box, 0, AGRI.doseMaxG),
     hoppers: hopperBoxes.map((b) => makeGauge(b, 0, HOPPER_MAX_KG)),
     total: el('div', { class: 'total' }),
+    stock: el('div', { class: 'stock' }),
     status: el('div', { class: 'status' }),
     notes: el('div', { class: 'rgroup' }),
     last: el('div', { class: 'reccard' }),
@@ -316,6 +336,7 @@ function renderMachine(body) {
     el('div', { class: 'grid3' }, HOPPERS.map(([name, what], i) =>
       widget(name + ' Weight', [hopperBoxes[i], el('div', { class: 'hmat', text: what })]))),
     widget('Total Weight', M.total),
+    widget('Enough stock for', M.stock),
     M.notes, M.last,
     el('p', { class: 'fine', text: 'This app only watches the machine. Doses start at the keypad, and * stops them.' }),
     M.sys);
@@ -324,8 +345,9 @@ function renderMachine(body) {
 
 const STATES = {
   I: ['Idle', 'Ready', ''], D: ['Dosing', 'Weighing', 'busy'],
-  F: ['Fault', 'Press * on the keypad', 'fault'], '?': ['Waiting', 'For the Mega', 'off'],
+  F: ['Fault', 'Check it, then # or * on the keypad', 'fault'], '?': ['Waiting', 'For the Mega', 'off'],
   R: ['Waiting', 'Unfinished dose: # or * on the keypad', 'fault'],
+  E: ['Draining', 'A hopper is being emptied (keypad D); * stops it', 'busy'],   // [10 Nov]
 };
 
 function updateMachine() {
@@ -343,6 +365,7 @@ function updateMachine() {
   });
   const [tt, tu] = hw ? massText(hw[0] + hw[1] + hw[2]) : ['--', ''];
   M.total.replaceChildren(tt, el('small', { text: tu }));
+  M.stock.replaceChildren(...stockView(s, hw));
 
   const [word, small, cls] = linkDown ? ['No link', 'Not on the AgriDose Wi-Fi', 'off']
     : !s.online ? ['Offline', 'No data from the Mega', 'off'] : STATES[s.flag] || [s.flag, '', ''];
@@ -373,15 +396,28 @@ function updateMachine() {
 }
 
 // ---- header: online dot and the bell ----
+// [10 Nov 2026] The bell warns when a hopper holds less than this many grams.
+// Only a warning: before a dose the keypad still checks that the dose fits (stock_check.h).
+const LOW_HOPPER_G = 200;
+function lowHopperAlerts(s) {
+  if (!s.online || !s.hoppers_dg) return [];             // no fresh hopper weights yet
+  return HOPPERS.flatMap(([name, what], i) => {
+    const dg = s.hoppers_dg[i];
+    if (dg >= LOW_HOPPER_G * 10) return [];
+    return [name + ' (' + what.toLowerCase() + ') is low: ' + Math.max(0, Math.floor(dg / 10)) + ' g left, under ' +
+      LOW_HOPPER_G + ' g. Refill it before the next dose.'];
+  });
+}
 function alerts() {
   const s = S.live;
   if (wifiDown()) return ['Not connected to the AgriDose Wi-Fi.'];
   if (!s) return [];
   const out = [];
   if (!s.online) out.push('Mega offline: no data from the machine for 2 seconds.');
-  if (s.flag === 'F') out.push('Fault at the machine (hopper empty, sensor or time-out). Press * on the keypad to clear it.');
+  if (s.flag === 'F') out.push('Fault at the machine (hopper empty, sensor or time-out). The dose is paused. The LCD says what to check; then press # on the keypad to continue it, or * to end it.');
   if (s.flag === 'R') out.push('The power went off during a dose. Press # on the keypad to continue it, or * to end it.');
   if (!s.sd_ok) out.push('SD card problem: doses, records and photos are not being saved.');
+  out.push(...lowHopperAlerts(s));
   return out;
 }
 function updateHeader() {

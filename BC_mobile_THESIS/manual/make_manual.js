@@ -118,7 +118,7 @@ add(
 add(H1('Contents'));
 [
   '1. About the machine', '2. Safety', '3. Starting the machine', '4. Making a dose with the keypad',
-  '5. Stopping a dose and clearing faults', '6. Zeroing the scales', '7. The phone app (dashboard)',
+  '5. Stopping a dose and clearing faults', '6. Zeroing the scales and draining a hopper', '7. The phone app (dashboard)',
   '8. Crop records', '9. Daily routine', '10. Care and maintenance', '11. Troubleshooting',
   '12. Specifications', '13. Status of this unit (1 Nov 2026)', 'Appendix A. Wiring (for technicians)',
   'Appendix B. Test programs (for technicians)',
@@ -158,7 +158,7 @@ add(H1('2. Safety'));
 add(bullets([
   '**Keep hands out of the hoppers and away from the auger outlets while the machine is on.** An auger can start when a dose starts.',
   'To stop a dose at once, press the **star key** ( * ) on the keypad. All augers stop.',
-  '**After a power cut, no auger starts by itself**, but pressing **#** at the question on the LCD starts one. Look first (section 5).',
+  '**After a fault or a power cut, no auger starts by itself**, but pressing **#** at the question on the LCD starts one. Look first (section 5).',
   '**Switch off the motor power before** you reach into a hopper, clear a jam or touch an auger.',
   'Wood ash is alkaline and dusty: wear gloves and a dust mask when filling hopper C.',
   'Keep water away from the boards, the keypad and the LCD.',
@@ -172,7 +172,7 @@ add(H1('3. Starting the machine', false));
 add(steps([
   'Check that the hoppers do not touch each other or the frame.',
   'Switch on the board power and the **motor power** (the augers have their own supply).',
-  'Wait for **AGRIDOSE READY / #=DOSE  0=ZERO**. The machine is ready. If the LCD asks **RESUME** instead, a dose was cut off: see section 5.',
+  'Wait for **AGRIDOSE D=DRAIN / #=DOSE  0=ZERO**. The machine is ready. If the LCD asks **RESUME** instead, a dose was cut off: see section 5.',
   'Fill the hoppers if they need it: rice hull in A, compost in B, wood ash in C. Use **dry, sieved compost** (wet or lumpy compost sticks above the auger).',
   'Open the phone app once (section 7). This also gives the machine the date and time for its dose log.',
 ]));
@@ -183,9 +183,9 @@ add(note('The LCD on this unit has a broken backlight. Read it with a phone flas
 add(H1('4. Making a dose with the keypad'));
 add(H2('The keys'));
 add(table([1600, 7760], ['Key', 'Meaning'], [
-  ['#', 'OK / next / start'],
-  ['*', 'Back / cancel. During a dose: **STOP**. After a fault: clear it.'],
-  ['D', 'Back to the home screen'],
+  ['#', 'OK / next / start. After a fault or a power cut: **continue the dose**.'],
+  ['*', 'Back / cancel. During a dose: **STOP**. After a fault or a power cut: end the dose.'],
+  ['D', 'Back to the home screen. **On the home screen: drain a hopper** (section 6).'],
   ['0 to 9', 'Type the mass in grams'],
   ['A, B, C', 'Choose the recipe'],
   ['0 (on the home screen)', 'Zero the scales (section 6)'],
@@ -193,7 +193,7 @@ add(table([1600, 7760], ['Key', 'Meaning'], [
 add(H2('Step by step'));
 add(P('Example: recipe A, 600 g. The keys are `# A # 6 0 0 # #`. Put a container under the outlet first.'));
 add(screens([
-  ['(nothing)', 'AGRIDOSE READY', '#=DOSE  0=ZERO', 'The home screen.'],
+  ['(nothing)', 'AGRIDOSE D=DRAIN', '#=DOSE  0=ZERO', 'The home screen.'],
   ['#', 'SELECT RECIPE', 'A / B / C *=BACK', 'Choose the recipe.'],
   ['A', 'RECIPE A GENERAL', '#=OK   *=BACK', 'Check the recipe name, then press # to go on.'],
   ['#', 'DOSE MASS (g)', '300-900: _', 'Type the total grams: any whole number from 300 to 900.'],
@@ -214,10 +214,22 @@ add(table([1400, 7960], ['Stage', 'Meaning'], [
 ]));
 add(H3('If the mass is out of range'));
 add(P('Typing a mass under 300 or over 900 and pressing # shows **OUT OF RANGE / USE 300-900 g** for 2 seconds. Type the mass again.'));
+add(H3('If a hopper is low'));
+add(P('Before the start the machine checks that each hopper holds its share of the dose plus a small spare (20 g). If one does not, it shows this instead of the check screen. Each short hopper shows in turn:'));
+add(screens([
+  ['#', 'LOW COMPOST', 'NEED 650 HAS 410', 'Compost needs 650 g (its 630 g share plus the spare) and has 410 g.'],
+  ['(wait)', 'REFILL HOPPER OR', '#=GO ON *=BACK', 'What you can do.'],
+]));
+add(bullets([
+  'Refill that hopper. The screen follows the scale, and when there is enough it changes to the check screen by itself. Then press # to start.',
+  'Or press **#** to start anyway. If the hopper runs out, the dose pauses with EMPTY (see Faults) and you can refill it then.',
+  'Or press the **star key** ( * ) to type a smaller mass.',
+]));
+add(P('The Machine tab in the app shows the same check for every recipe, under **Enough stock for**.'));
 add(H3('Other messages before the start'));
 add(table([3200, 6160], ['LCD', 'What to do'], [
   ['LINK BUSY / TRY AGAIN', 'Wait a moment and press # again.'],
-  ['MACHINE BUSY / TRY AGAIN LATER', 'A dose or a zeroing is still running. Wait for it to end.'],
+  ['MACHINE BUSY / TRY AGAIN LATER', 'A dose, a drain or a zeroing is still running. Wait for it to end.'],
   ['NO REPLY / CHECK MEGA LINK', 'The main board did not answer. See Troubleshooting (section 11).'],
   ['MEGA RESTARTED / TRY AGAIN', 'The main board restarted. Check the power, then start again.'],
   ['DOSE REFUSED / (reason)', 'The main board refused the dose. Note the reason and see section 11.'],
@@ -229,14 +241,21 @@ add(H2('Stopping'));
 add(P('Press the **star key** ( * ) at any time during a dose. All augers stop at once and the LCD shows **DOSE STOPPED** with the grams dosed so far. The stopped dose is saved in the dose log with its actual mass.'));
 add(P('At the very start of a hopper, while it takes its first weight, the machine can take up to about 1 second to react to the star key.'));
 add(H2('Faults'));
-add(P('A fault stops the augers and ends the dose. The LCD shows the fault and the hopper, for example:'));
-add(new Table({ width: { size: 2600, type: WidthType.DXA }, columnWidths: [2600], rows: [new TableRow({ children: [lcdCell('EMPTY: HULL', 'PRESS * TO CLEAR', 2600)] })] }), new Paragraph({ children: [], spacing: { after: 120 } }));
+add(P('A fault stops the augers and **pauses** the dose. Nothing is lost. The LCD names the fault and the hopper and shows, one after another, what to check, for example:'));
+add(new Table({ width: { size: 2600, type: WidthType.DXA }, columnWidths: [2600], rows: [new TableRow({ children: [lcdCell('EMPTY: HULL', 'REFILL HOPPER?', 2600)] })] }), new Paragraph({ children: [], spacing: { after: 120 } }));
 add(table([1600, 3600, 4160], ['Fault', 'Cause', 'What to do'], [
-  ['EMPTY', 'The hopper weight did not drop by at least 1 g in 5 seconds while its auger ran.', 'Is the hopper empty? Refill it. Is compost stuck above the inlet (bridging)? Tap the side of the jug or stir. Is the motor power on? Is the auger jammed?'],
+  ['EMPTY', 'The hopper weight did not drop by at least 1 g in 15 seconds while its auger ran.', 'Is the hopper empty? Refill it. Is compost stuck above the inlet (bridging)? Tap the side of the jug or stir. Is the motor power on? Is the auger jammed?'],
   ['SENSOR', 'A scale (load cell) stopped answering.', 'Check the load-cell wires and connectors of that hopper. Call a technician if it repeats.'],
   ['TIMEOUT', 'One hopper took longer than 4 minutes.', 'Usually slow feeding: bridging, wet compost, or a nearly empty hopper. Fix it as for EMPTY.'],
 ]));
-add(P('To clear a fault: fix the cause, then press the **star key** ( * ). The LCD shows the result of the part that was dosed, and the dose is saved in the log with what was really dosed. **The machine does not continue the dose**: start a new dose for the rest if you need it.'));
+add(P('After the checks the LCD shows **HANDS CLEAR? / #=GO ON *=END**, then the checks again, until you answer:'));
+add(steps([
+  'Fix the cause. **Switch off the motor power before** you reach into a hopper or touch an auger.',
+  'Switch the motor power back on and take your hands away.',
+  'Press **#**. The LCD shows **CONTINUING DOSE / HANDS CLEAR!**, and about 1 second later the same hopper carries on from the grams it had already dosed.',
+]));
+add(P('Or press the **star key** ( * ) to end the dose. The LCD shows **DOSE STOPPED** with the grams dosed so far, and the dose is saved in the log with what was really dosed.'));
+add(note('You may refill the hopper during the pause: the machine weighs it afresh before it continues, so the added material is not counted as dosed. Pushing on a jug while you clear it does not lose the grams already dosed either. If the cause is still there, the same fault comes back. A dose gets one row in the log, however many faults it had.'));
 add(H2('If the power goes off during a dose'));
 add(P('The machine saves its progress while it runs, so a power cut does not lose the dose. When the power comes back, **no auger moves**. The LCD asks what to do and shows the grams dosed so far, for example:'));
 add(new Table({ width: { size: 2600, type: WidthType.DXA }, columnWidths: [2600], rows: [new TableRow({ children: [lcdCell('RESUME A 600g?', '201g #=YES *=NO', 2600)] })] }), new Paragraph({ children: [], spacing: { after: 120 } }));
@@ -247,10 +266,11 @@ add(table([1600, 7760], ['Key', 'What happens'], [
 add(P('It keeps asking until you answer, even if the power goes off again. No new dose can start until you do.'));
 add(warn('If you plan to continue, do not add material to a hopper or take any out while the power is off. The machine works out the grams from the hopper weight, and a small change can go unnoticed.'));
 add(P('**WEIGHT CHANGED!** on the top line means the hopper weight does not fit the saved progress, usually because material was added or taken out while the power was off. The grams shown then come from the last save, up to 5 seconds old, so they can be too low or too high. It is safest to press * and start a new dose for the rest.'));
-add(note('This only happens when the boards lose power. If only the motor power goes off and the boards stay on, the dose ends with an EMPTY fault after 5 seconds, and it cannot be continued.'));
+add(note('This only happens when the boards lose power. If only the motor power goes off and the boards stay on, the dose pauses with an EMPTY fault after 15 seconds: switch the motor power back on and press #.'));
 
 // 6. Zero
-add(H1('6. Zeroing the scales', false));
+add(H1('6. Zeroing the scales and draining a hopper', false));
+add(H2('Zeroing the scales'));
 add(P('The machine remembers its scale zeros when it is switched off. Zero the scales if empty hoppers do not show 0 g on the phone, after the machine was moved, or after a hopper was taken off.'));
 add(steps([
   'Empty all three hoppers. Take your hands off the machine.',
@@ -258,6 +278,22 @@ add(steps([
   'Press **#**. The LCD shows **ZEROING SCALES / HOPPERS EMPTY!** for about 6 seconds, then the home screen.',
 ]));
 add(note('While the scales are zeroing, the phone may show "Mega offline" for a few seconds. That is normal.'));
+add(H2('Draining a hopper'));
+add(P('Draining runs one hopper\'s auger to empty it: at the end of the day, before the machine stands for some days, or to change the material. **The material comes out of the outlet, as in a dose: put a container under it first.** A drain is not a dose: it is not saved in the Batch Log.'));
+add(screens([
+  ['D', 'DRAIN  A=HULL', 'B=COMP C=ASH', 'On the home screen. Choose the hopper: A rice hull, B compost, C wood ash.'],
+  ['B', 'COMP HAS 4123g', '#=DRAIN *=BACK', 'What is in that hopper now. * goes back, D goes home.'],
+  ['#', 'STARTING DRAIN', 'PLEASE WAIT...', 'The hopper is weighed (about 1 s), then its auger starts at full speed.'],
+  ['(wait)', 'DRAINING COMP', 'OUT 1234g *=STOP', 'The grams that have come out so far.'],
+  ['*', 'DRAIN STOPPED', 'COMP 1234g OUT', 'The star key stops it at once. After 3 s the home screen.'],
+]));
+add(P('The machine also stops a drain by itself:'));
+add(table([3000, 6360], ['LCD', 'Why'], [
+  ['NO FLOW: EMPTY?', 'Less than 1 g came out in 15 s: the hopper is empty, or the material is stuck above the auger (tap the hopper, then drain again).'],
+  ['DRAIN: NO SENSOR', 'The hopper\'s scale stopped answering. Check its load-cell connector.'],
+  ['DRAIN TIME UP', 'It ran for 10 minutes. Press D again to go on.'],
+]));
+add(note('While a hopper drains, the phone shows **Draining** under Machine Status, and that hopper\'s gauge goes down. A dose or a zeroing cannot start until the drain ends.'));
 
 // 7. Phone app
 add(H1('7. The phone app (dashboard)'));
@@ -277,13 +313,14 @@ add(bullets([
 ]));
 add(H2('The tabs'));
 add(table([1900, 7460], ['Tab', 'What it shows'], [
-  ['Machine', 'Live status (idle, dosing or fault), the weight being dosed, the stock in each hopper (A, B, C gauges and total), and the last dose. The small line at the bottom shows the machine\'s clock and system details.'],
+  ['Machine', 'Live status (idle, dosing, draining or fault), the weight being dosed, the stock in each hopper (A, B, C gauges and total), how big a dose of each recipe that stock allows (**Enough stock for**), and the last dose. The small line at the bottom shows the machine\'s clock and system details.'],
   ['Records', 'The crop records of a farmer (section 8). Needs a login.'],
   ['Recommend', 'Pick a planted plot: the app ranks recipes A, B and C from the newest soil test, the crop\'s pH range, the fertilizer applied and the rain, and shows the **keys to press** at the machine for the dose, e.g. `# B # 6 0 0 # #`. Nothing is sent to the machine. Needs a login.'],
   ['Crop Guide', 'The 12 crops with local names, soil pH ranges and sources.'],
   ['Batch Log', 'Every dose, newest first, with the date and time, target, actual mass and error. **View details** shows the split per material; **Download CSV** saves the whole log.'],
 ]));
 add(P('The **Bisaya** button shows every label in Bisaya too. The sun button switches to a bright mode for use outdoors.'));
+add(P('A **red dot on the bell** means there is an alert: tap the bell to read it. Besides faults, Mega offline and SD card problems, the bell warns when **a hopper holds less than 200 g**, e.g. "Hopper B (compost) is low: 150 g left". Refill that hopper and the dot goes.'));
 add(H2('Logins'));
 add(bullets([
   'Anyone on the AgriDose Wi-Fi can see the Machine tab, the Crop Guide and the Batch Log.',
@@ -325,7 +362,7 @@ add(H1('9. Daily routine'));
 add(H2('Start of the day'));
 add(steps([
   'Hoppers not touching each other; container ready under the outlet.',
-  'Switch on the board power and the motor power. Wait for AGRIDOSE READY.',
+  'Switch on the board power and the motor power. Wait for AGRIDOSE D=DRAIN / #=DOSE  0=ZERO.',
   'Fill the hoppers if they need it (dry, sieved compost).',
   'Open the app once: check the Machine tab shows the hoppers\' stock and the clock.',
 ]));
@@ -337,7 +374,7 @@ add(bullets([
 ]));
 add(H2('End of the day'));
 add(steps([
-  'If the machine will stand for some days, empty the hoppers (damp compost sticks above the auger).',
+  'If the machine will stand for some days, empty the hoppers (damp compost sticks above the auger): D on the keypad drains one hopper at a time (section 6).',
   'Brush the outlets clean.',
   'Once a week, download the Batch Log and the records (CSV) to a phone or laptop as a backup.',
   'Switch off the motor power, then the board power.',
@@ -360,10 +397,12 @@ add(table([2500, 3000, 3860], ['Problem', 'Likely cause', 'What to do'], [
   ['The LCD looks blank', 'Broken backlight on this unit, or contrast', 'Use a flashlight at an angle; turn the contrast screw on the back. Technician: run lcd_test.'],
   ['LCD: NO ESP32 LINK / CHECK UART WIRES', 'The Wi-Fi board is off or the link wires are loose', 'Check the ESP32 has power; check the two link wires and the shared ground (Appendix A).'],
   ['A key does nothing', 'Pressed too lightly or too fast', 'Press firmly in the middle of the key. Technician: run keypad_test.'],
-  ['EMPTY fault but the hopper is full', 'Compost bridging, motor power off, or a jammed auger', 'Tap or stir the hopper; check the motor supply is switched on; switch off and clear the jam.'],
+  ['EMPTY fault but the hopper is full', 'Compost bridging, motor power off, or a jammed auger', 'Tap or stir the hopper; check the motor supply is switched on; switch off and clear the jam. Then press # to continue the dose.'],
   ['An auger does not turn', 'Motor power off, or driver wiring', 'Switch on the motor supply; check the motor driver connectors (Appendix A).'],
-  ['SENSOR fault', 'Load-cell wire loose', 'Check that hopper\'s load-cell connector.'],
+  ['SENSOR fault', 'Load-cell wire loose', 'Check that hopper\'s load-cell connector. Then press # to continue the dose.'],
   ['TIMEOUT fault', 'Very slow feeding', 'As for EMPTY: bridging, wet compost, nearly empty hopper.'],
+  ['NO FLOW: EMPTY? while draining, but material is left', 'Bridging above the auger, or motor power off', 'Tap or stir the hopper; check the motor supply; press D and drain again.'],
+  ['Bell: a hopper is low', 'Under 200 g in that hopper', 'Refill it before the next dose.'],
   ['Weights on the phone jump or are wrong', 'Hoppers touching, loose wire, or a scale that was zeroed with material in it', 'Separate the hoppers; check connectors; empty and zero the scales (section 6).'],
   ['LCD: RESUME or WEIGHT CHANGED! at switch-on', 'The power went off during a dose', 'Answer with # or * (section 5).'],
   ['The phone does not open the app page', 'Not on the AgriDose Wi-Fi, or Android left it for "no internet"', 'Join AgriDose again and choose to stay connected; open http://192.168.4.1/. At most 5 phones.'],
@@ -382,7 +421,9 @@ add(table([3300, 6060], ['Item', 'Value'], [
   ['Order of feeding', 'Rice hull, wood ash, then compost'],
   ['Accuracy target', 'Each hopper ends at most 2 g under its share (up to 3 top-ups)'],
   ['Compost feed (auger B)', 'About 10 to 13 g per second; slows by bursts near the target'],
-  ['Fault limits', 'EMPTY after 5 s without 1 g of progress; TIMEOUT after 4 min per hopper'],
+  ['Fault limits', 'EMPTY after 15 s without 1 g of progress; TIMEOUT after 4 min per hopper'],
+  ['Draining', 'One hopper at a time, full speed; stops on *, after 15 s without 1 g out, or after 10 min'],
+  ['Low hopper alert', 'On the phone\'s bell when a hopper holds under 200 g'],
   ['Controllers', 'Arduino Mega 2560 (scales, augers, LCD); ESP32 (keypad, microSD, Wi-Fi)'],
   ['Scales', '3 load cells with HX711 amplifiers'],
   ['Motor drivers', '3 × IBT_2 (BTS7960), one direction'],
@@ -405,6 +446,9 @@ add(table([2600, 1600, 5160], ['Part', 'Status', 'Notes'], [
   ['Phone app', 'Mostly checked', 'Hopper gauges read 0 g with empty hoppers. Still to check on the phone: the clock, a dose with its time, Delete, the 300–900 g range. "Take photo" does not respond in the Android app.'],
   ['300 to 900 g range', 'New (1 Nov)', 'Not yet run with a full 900 g dose. Check the hoppers hold their shares and the load cells are rated for the weight.'],
   ['Saving through a power cut', 'New (3 Nov)', 'Tested on a laptop with the real firmware and modelled hoppers. Not yet tried on this machine.'],
+  ['Faults pause the dose', 'New (3 Nov)', 'Tested the same way. Not yet tried on this machine.'],
+  ['Draining a hopper', 'New (10 Nov)', 'Tested on a laptop with the real Mega firmware and modelled hoppers. Not yet tried on this machine; both boards need the new firmware.'],
+  ['Low hopper alert', 'New (10 Nov)', 'Tested in the dashboard test. Not yet seen on a phone.'],
 ]));
 
 // Appendix A

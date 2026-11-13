@@ -11,13 +11,15 @@
 //    Always        each scale's zero and the learned stop-early grams, so a
 //                  loaded hopper still reads its true weight after a power-off.
 //    During a dose recipe, mass, seq, which hopper, the grams from each hopper,
-//                  and what the running hopper weighed when it started.
+//                  and what the running hopper weighed when it started. Also
+//                  when a fault has paused the dose.
 //    After a dose  the result, until the ESP32 answers GOT, so a power cut
 //                  can't lose the row in the dose log.
 //
 //  WHEN (the calls are in AgriDose_Mega_Link.ino)
 //    Auger off     before every hopper start and top-up, when a hopper
-//                  finishes, when a dose ends, after zeroing.
+//                  finishes, when a fault pauses a dose, when a dose ends,
+//                  after zeroing.
 //    Auger running every STATE_SAVE_EVERY_MS, one byte per loop pass, so dosing
 //                  never waits for the EEPROM (a byte takes about 3.4 ms).
 //
@@ -51,7 +53,8 @@
 enum StatePhase : uint8_t {
   STATE_PHASE_NONE = 0,   // no dose: only the zeros and learned values matter
   STATE_PHASE_RUNNING,    // a dose was running: ask the operator at power-on
-  STATE_PHASE_DONE_WAIT   // a dose had ended, but the ESP32 had not answered GOT
+  STATE_PHASE_DONE_WAIT,  // a dose had ended, but the ESP32 had not answered GOT
+  STATE_PHASE_FAULT       // a fault had paused the dose: the grams are exact, don't ask the scale
 };
 
 struct __attribute__((packed)) SavedState {

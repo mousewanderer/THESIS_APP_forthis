@@ -99,6 +99,31 @@ state = {"weight_dg": 0, "flag": "I", "done_count": 0, "last": None}
 # Hopper stock in grams, with load-cell noise; "sent" is what the Mega last sent in HW
 # (only a move over HW_DEADBAND_G goes out, as in AgriLink.h).
 HW_DEADBAND_G = 5.0
+
+# [10 Nov 2026] The stock check, copied from stock_check.h: a hopper is short when it
+# weighs less than its share of the dose plus STOCK_SPARE_G (config.h).
+RECIPE_PCT = [(25, 70, 5), (30, 65, 5), (30, 60, 10)]   # AGRI_RECIPES in AgriLink.h: hull, compost, ash
+STOCK_SPARE_G = (20, 20, 20)
+DOSE_MIN_G, DOSE_MAX_G = 300, 900
+
+
+def stock_short_mask(pct, grams, have_dg):
+    total = grams * 10
+    hull = (total * pct[0] + 50) // 100                    # agriSplitDose
+    ash = (total * pct[2] + 50) // 100
+    mask = 0
+    for i, share in enumerate((hull, total - hull - ash, ash)):
+        if share > 0 and have_dg[i] < share + STOCK_SPARE_G[i] * 10:
+            mask |= 1 << i
+    return mask
+
+
+def stock_max_dose(pct, have_dg):
+    """(biggest dose in grams, 0 if not even the smallest; the hoppers that limit it)"""
+    for g in range(DOSE_MAX_G, DOSE_MIN_G - 1, -1):
+        if stock_short_mask(pct, g, have_dg) == 0:
+            return g, (stock_short_mask(pct, g + 1, have_dg) if g < DOSE_MAX_G else 0)
+    return 0, stock_short_mask(pct, DOSE_MIN_G, have_dg)
 stock = {"g": [4200.0, 3600.0, 900.0], "sent_dg": [42000, 36000, 9000]}
 doses = [{"no": n, "boot": 1, "uptime_s": 60 * n, "seq": n, "recipe": "ABC"[n % 3],
           "target_dg": 6000, "actual_dg": 6000 + random.randint(-25, 25),
@@ -268,6 +293,9 @@ def status():
              "hoppers_dg": list(stock["sent_dg"]), "clock_set": clock["set"], "epoch": clock_now()}
         if state["last"]:
             s["last"] = state["last"]
+        stock_rows = [stock_max_dose(pct, s["hoppers_dg"]) for pct in RECIPE_PCT]
+        s["stock_max_g"] = [m for m, _ in stock_rows]
+        s["stock_short"] = [k for _, k in stock_rows]
     return s
 
 

@@ -9,14 +9,15 @@
 //    - sends the menu text (DISP) to the Mega's LCD
 //
 //  LOOK-ONLY RULE: the web dashboard files never include this header, so
-//  no web request can call linkRequest() (DOSE, TARE, STOP, RESUME). Only the
-//  keypad code in AgriDose_ESP32_Link.ino uses it.
+//  no web request can call linkRequest() (DOSE, TARE, STOP, RESUME, DRAIN).
+//  Only the keypad code in AgriDose_ESP32_Link.ino uses it.
 // =====================================================================
 #pragma once
 #include <Arduino.h>
 #include "live_state.h"
 
-enum LinkCmd : uint8_t { LINK_PING, LINK_TARE, LINK_STOP, LINK_DOSE, LINK_RESUME };
+enum LinkCmd : uint8_t { LINK_PING, LINK_TARE, LINK_STOP, LINK_DOSE, LINK_RESUME,
+                         LINK_DRAIN };   // [10 Nov] empty one hopper (DRAIN)
 
 enum LinkOutcome : uint8_t {
   LINK_ACKED,           // the Mega said ACK
@@ -37,7 +38,8 @@ struct LinkResult {
 void linkBegin(uint8_t lastLoggedSeq);
 
 // Keypad -> Mega. Returns false if the command queue is full.
-// recipe and grams are used by LINK_DOSE only.
+// recipe and grams are used by LINK_DOSE only. LINK_DRAIN takes the hopper
+// letter ('A', 'B' or 'C') in recipe.
 bool linkRequest(LinkCmd cmd, char recipe = 0, int grams = 0);
 
 // For loop(): how did each command end? (true = one result was taken)
